@@ -574,7 +574,7 @@ namespace Knx.EtsBridge.Addin
         // -- Batch orchestration: opaque UndoManager marker handle --
         // Used by batch.apply to wrap many sub-operations in ONE undo marker so the
         // whole batch is atomic (a later step's failure rolls back the earlier ones).
-        // Sub-operations open their own child markers, which nest under this one.
+        // While the marker is open, sub-operations run directly under it (no child markers).
         // MUST be called on the UI thread (batch.apply runs the whole sequence inside
         // a single dispatcher invocation, so callers are already on the UI thread).
 
@@ -584,8 +584,12 @@ namespace Knx.EtsBridge.Addin
         /// <summary>Commit the marker (and bump the project revision), then dispose it.</summary>
         void CommitMarker(object markerHandle);
 
-        /// <summary>Discard the marker -- rolls back all operations under it -- then dispose it.</summary>
-        void DiscardMarker(object markerHandle);
+        /// <summary>
+        /// Discard the marker -- rolls back the operations under it -- then dispose it.
+        /// Returns true if Discard completed cleanly; false if it threw, in which case the
+        /// rollback may be partial (an SDK operation's undo can fail after an internal error).
+        /// </summary>
+        bool DiscardMarker(object markerHandle);
 
         ProjectInfo GetProjectInfo();
         List<DeviceInfo> ListDevices();

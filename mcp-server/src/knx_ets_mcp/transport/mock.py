@@ -1233,10 +1233,13 @@ class MockTransport(Transport):
         if atomic and failed and snapshot is not None:
             self._restore_state(snapshot)  # roll back all applied steps
 
+        # The mock restores from a full snapshot, so its rollback is always clean; the AddIn
+        # reports rollbackNote when the SDK discard did not complete cleanly (see IpcServer).
         return {
             "applied": (not failed) if atomic else True,
             "atomic": atomic,
             "rolledBack": atomic and failed,
+            "rollbackNote": None,
             "total": len(parsed),
             "ok": ok_count,
             "failed": failed_count,

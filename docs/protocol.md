@@ -187,10 +187,18 @@ Mutating (idempotencyKey required, run on ETS UI thread under UndoManager marker
   "Couch" in the description is findable), and `knx_list_group_addresses` (`name_contains`,
   matches name/description/comment/address -- e.g. a label in the GA description).
   - Must check `IsActive` beforehand; inactive object -> `error.inactive_object`.
+  - If the SDK's own link operation fails internally (observed when adding a SECOND group
+    address to a modular device's com-object: the SDK raises a missing-dictionary-key
+    error), the link is reported as `error.internal` with the link state unverified -- NOT
+    `not_found` (the refs are valid). The project is left unchanged. Workaround: add that GA
+    manually in ETS; use `atomic: false` for such batches.
 - `link.delete` `{ comObjectRef, gaRef }` -> `{ ok }`
   - **Idempotent:** if the link does not (or no longer) exist, still returns
     `{ ok: true }`, not `not_found`. A `not_found` occurs only when `comObjectRef`/
     `gaRef` themselves are unknown.
+  - The removal is verified: after unlinking, the com-object's live connectors are re-read,
+    and if the link is still present an `error.internal` is returned instead of a false
+    `{ ok: true }` (the unlink is rolled back).
 - `param.set` `{ deviceRef, parameterRef, value }` -> `{ ok }`
 - `ga.delete` `{ groupAddressRef }` -> `{ ok }`
   - Removes the GA and all its links. Not reversible except via Undo.
@@ -355,7 +363,7 @@ marker, so parametrising and linking across many devices is one round-trip and o
 step instead of dozens. Requires `idempotencyKey` (the batch is one mutating operation).
 
 - `batch.apply` `{ operations: [ { method, params }, ... ], atomic?, validateOnly? }` ->
-  `{ applied, atomic, rolledBack, total, ok, failed, skipped, results: [ { index, method, status, result?, error? } ] }`
+  `{ applied, atomic, rolledBack, rollbackNote?, total, ok, failed, skipped, results: [ { index, method, status, result?, error? } ] }`
   - `validateOnly` (default `false`): read-only pre-flight. Nothing is mutated; returns
     `{ validated: true, atomic, total, valid, invalid, results: [ { index, method, valid,
     issues: [string] } ] }`. Checks: required params present; `link.create` -> com-object
@@ -371,12 +379,17 @@ step instead of dozens. Requires `idempotencyKey` (the batch is one mutating ope
     Max 500 operations.
   - `atomic` (default `true`): all-or-nothing. The first failing step rolls back the whole
     batch (outer marker discarded); remaining steps are reported `status: "skipped"` and
-    `applied: false`, `rolledBack: true`. With `atomic: false` each step is independent,
-    failures do not stop later steps, `applied: true`.
+    `applied: false`. With `atomic: false` each step is independent, failures do not stop
+    later steps, `applied: true`.
+  - `rolledBack` is `true` only when a failed atomic batch was rolled back cleanly. Rollback
+    is best-effort: if an SDK operation fails mid-execution its undo can itself throw and halt
+    the rollback, leaving earlier steps applied. In that case `rolledBack` is `false` and
+    `rollbackNote` explains that the project may hold partial changes -- re-read the affected
+    objects to confirm. For devices where a step is prone to internal SDK failures (e.g.
+    linking a second group address to a modular device's com-object), prefer `atomic: false`.
   - A step is never reported `ok` unless it actually ran successfully; per-step errors
     are surfaced under `error: { code, message }`, never swallowed.
-  - Sub-operations run inline on the ETS UI thread; their own undo markers nest under the
-    batch marker.
+  - Sub-operations run inline on the ETS UI thread under the single batch marker.
 
 Truncation reporting: `ga.create`/`ga.rename` and `device.rename` read the stored name
 back and set `truncated: true` in the result when ETS shortened it to its length limit

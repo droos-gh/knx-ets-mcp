@@ -2284,6 +2284,7 @@ namespace Knx.EtsBridge.Addin
                 var results = new List<object>(ops.Count);
                 int okCount = 0, failedCount = 0, skippedCount = 0;
                 bool failed = false;
+                bool rollbackClean = true;
 
                 object? marker = atomic ? _gateway.BeginMarker($"Bridge: Batch ({ops.Count} ops)") : null;
                 try
@@ -2330,7 +2331,7 @@ namespace Knx.EtsBridge.Addin
 
                     if (atomic)
                     {
-                        if (failed) _gateway.DiscardMarker(marker!);
+                        if (failed) rollbackClean = _gateway.DiscardMarker(marker!);
                         else _gateway.CommitMarker(marker!);
                         marker = null; // Commit/Discard already disposed it.
                     }
@@ -2341,15 +2342,27 @@ namespace Knx.EtsBridge.Addin
                     // committed/discarded, roll back rather than leak an open marker.
                     if (atomic && marker != null)
                     {
-                        try { _gateway.DiscardMarker(marker); } catch { }
+                        try { rollbackClean = _gateway.DiscardMarker(marker); } catch { rollbackClean = false; }
                     }
                 }
+
+                // Report the rollback outcome honestly. `rolledBack` is true only when the
+                // discard completed cleanly; if it threw, the rollback may be partial and the
+                // caller is told to re-read (modular-device link failures in particular can
+                // leave the SDK unable to fully undo -- prefer atomic:false there).
+                bool rolledBack = atomic && failed && rollbackClean;
+                string? rollbackNote =
+                    (atomic && failed && !rollbackClean)
+                        ? "Rollback did not complete cleanly; some earlier operations may still "
+                        + "be applied. Re-read the affected objects to confirm project state."
+                        : null;
 
                 return new
                 {
                     applied = atomic ? !failed : true,
                     atomic,
-                    rolledBack = atomic && failed,
+                    rolledBack,
+                    rollbackNote,
                     total = ops.Count,
                     ok = okCount,
                     failed = failedCount,

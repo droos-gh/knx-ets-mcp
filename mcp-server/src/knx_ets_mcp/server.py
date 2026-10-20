@@ -2375,9 +2375,12 @@ async def knx_batch_apply(
       op that depends on a prerequisite created by an EARLIER op in the same batch (e.g.
       link to a GA that op #1 creates) may be reported invalid yet still succeed on apply.
 
-    On apply, returns {applied, atomic, rolledBack, total, ok, failed, skipped, results[]},
-    where each results[i] is {index, method, status: ok|error|skipped, result?,
-    error?}. A step is never reported ok unless it actually ran successfully.
+    On apply, returns {applied, atomic, rolledBack, rollbackNote?, total, ok, failed,
+    skipped, results[]}, where each results[i] is {index, method, status: ok|error|skipped,
+    result?, error?}. A step is never reported ok unless it actually ran successfully.
+    `rolledBack` is true only when the failed atomic batch was rolled back cleanly; if the
+    SDK could not fully undo it, `rolledBack` is false and `rollbackNote` says the project
+    may hold partial changes (re-read to confirm; prefer atomic=false on modular devices).
     """
     try:
         client = await _get_client()

@@ -26,8 +26,9 @@ namespace Knx.EtsBridge.Addin
     /// Ref encoding (project-stable, opaque to MCP server):
     ///   Device       -> "d{Puid}"
     ///   GroupAddress -> "ga:{DomObject.Id}"  (#8: stable, not address-derived)
-    ///   ComObject    -> "d{devicePuid}:c{Number}"           (device-level)
-    ///                   "d{devicePuid}:m{modulePuid}:c{Number}" (module-level, #7)
+    ///   ComObject    -> "d{devicePuid}:c{Number}"              (device-level)
+    ///                   "d{devicePuid}:m{moduleIndex}:c{Number}" (module-level; index is the
+    ///                   module instance's position -- its Puid is 0 for every instance)
     ///   Parameter    -> "d{devicePuid}:p:{UniqueId}"        (#6: prefixed, round-trips)
     ///   Area         -> "a{Address}"
     ///   Line         -> "a{areaAddr}:l{lineAddr}"
@@ -196,6 +197,11 @@ namespace Knx.EtsBridge.Addin
 
         private void BumpRevision() => System.Threading.Interlocked.Increment(ref _revisionCounter);
 
+        // When a batch.apply is running, its outer marker is held here so sub-operations
+        // run directly under it instead of each opening its own child marker. Set on the UI
+        // thread only (a batch executes in a single UI-thread round), so no locking is needed.
+        private Marker? _activeBatchMarker;
+
         /// <summary>
         /// #14: Run a mutation inside an UndoManager marker with proper rollback.
         /// On exception before Commit, Discard() is called to roll back all operations.
@@ -203,9 +209,16 @@ namespace Knx.EtsBridge.Addin
         ///   "Discards this marker and rolls back all operations associated with this marker."
         /// Verified: M:Knx.Ets.Sdk.UndoRedo.Marker.Dispose (SDK XML line 29411)
         ///   Dispose does NOT roll back -- it only removes from parent's child marker list.
+        /// Inside a batch (BeginMarker has set _activeBatchMarker) the body runs directly under
+        /// that one outer marker: every sub-operation then belongs to a single marker that the
+        /// batch commits or discards as a whole, rather than each committing its own child
+        /// marker. The outer marker owns the revision bump.
         /// </summary>
         private T RunInMarker<T>(string name, Func<T> body)
         {
+            if (_activeBatchMarker != null)
+                return body();
+
             var marker = Project.UndoManager.OpenMarker(name);
             try
             {
@@ -232,13 +245,22 @@ namespace Knx.EtsBridge.Addin
         }
 
         // -- Batch orchestration marker primitives (see IEtsProjectGateway) --
-        // These expose the UndoManager marker lifecycle so batch.apply can wrap many
-        // sub-operations (each of which opens its own child marker via RunInMarker) in
-        // ONE outer marker. Nested markers group under the parent; discarding the parent
-        // rolls back all children (SDK: Marker.Discard "rolls back all operations
-        // associated with this marker"). MUST run on the UI thread.
+        // batch.apply wraps all its sub-operations in ONE outer marker. While it is open,
+        // RunInMarker runs sub-operations directly under it (no child markers), so the whole
+        // batch commits or discards as a unit. MUST run on the UI thread.
+        //
+        // Rollback is best-effort: the SDK undoes a discarded marker's operations in reverse,
+        // and if one operation's undo throws (e.g. after an internal SDK failure left it
+        // partially applied) the traversal can stop, leaving earlier operations applied.
+        // DiscardMarker therefore reports whether Discard completed without error so the
+        // caller can tell the user the rollback was clean vs. possibly partial.
 
-        public object BeginMarker(string name) => Project.UndoManager.OpenMarker(name);
+        public object BeginMarker(string name)
+        {
+            var marker = Project.UndoManager.OpenMarker(name);
+            _activeBatchMarker = marker;
+            return marker;
+        }
 
         public void CommitMarker(object markerHandle)
         {
@@ -250,16 +272,27 @@ namespace Knx.EtsBridge.Addin
             }
             finally
             {
+                if (ReferenceEquals(_activeBatchMarker, marker)) _activeBatchMarker = null;
                 marker.Dispose();
             }
         }
 
-        public void DiscardMarker(object markerHandle)
+        /// <summary>
+        /// Discard (roll back) the batch marker. Returns true if Discard completed without
+        /// throwing; false if it threw, which means the rollback may be incomplete.
+        /// </summary>
+        public bool DiscardMarker(object markerHandle)
         {
             var marker = (Marker)markerHandle;
+            bool ok = true;
             try { marker.Discard(); }
-            catch { /* Discard best-effort; may throw if marker already closed */ }
-            finally { marker.Dispose(); }
+            catch { ok = false; /* rollback may be partial; reported to the caller */ }
+            finally
+            {
+                if (ReferenceEquals(_activeBatchMarker, marker)) _activeBatchMarker = null;
+                marker.Dispose();
+            }
+            return ok;
         }
 
         private Device FindDevice(string deviceRef)
@@ -300,82 +333,122 @@ namespace Knx.EtsBridge.Addin
         }
 
         /// <summary>
-        /// #7: Parse composite comobject ref.
-        /// Device-level: "d{puid}:c{number}"
-        /// Module-level: "d{puid}:m{modulePuid}:c{number}"
+        /// Parse a composite comobject ref and resolve it to its device + CO.
+        /// Device-level: "d{puid}:c{number}". Module-level: "d{puid}:m{index}:c{number}"
+        /// where index is the module instance's position in the device's module list.
+        /// Resolution is by the device-unique com-object Number: a module ref prefers the
+        /// indicated module instance, then falls back to a device-wide scan by Number. The
+        /// fallback keeps legacy "m{puid}" refs (which always carried puid 0) working and is
+        /// robust to module-ordering changes. The active collection is preferred throughout
+        /// (after a parameter change the SDK may expose the activated object only there).
         /// </summary>
         private (Device device, ComObjectInstanceRef co) FindComObject(string coRef)
         {
             var parts = coRef.Split(':');
+            if (parts.Length != 2 && parts.Length != 3)
+                throw new ArgumentException($"Invalid comobject ref: {coRef}");
+            if (!parts[0].StartsWith("d", StringComparison.Ordinal)
+                || !parts[parts.Length - 1].StartsWith("c", StringComparison.Ordinal))
+                throw new ArgumentException($"Invalid comobject ref: {coRef}");
 
-            // Device-level: 2 parts
-            if (parts.Length == 2)
-            {
-                if (!parts[0].StartsWith("d", StringComparison.Ordinal)
-                    || !parts[1].StartsWith("c", StringComparison.Ordinal))
-                    throw new ArgumentException($"Invalid comobject ref: {coRef}");
+            var device = FindDevice(parts[0]);
+            if (!uint.TryParse(parts[parts.Length - 1].Substring(1), out var coNumber))
+                throw new ArgumentException($"Invalid comobject number in ref: {coRef}");
 
-                var device = FindDevice(parts[0]);
-                if (!uint.TryParse(parts[1].Substring(1), out var coNumber))
-                    throw new ArgumentException($"Invalid comobject number in ref: {coRef}");
-
-                // Prefer ActiveComObjectInstanceRefs: after a parameter change the SDK
-                // may return the activated object only in the active collection, while
-                // the full collection's instance still has IsActive=false. Using the
-                // active collection first aligns FindComObject with ListComObjects.
-                var co = device.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>()
-                             .FirstOrDefault(c => c.Number == coNumber)
-                      ?? device.ComObjectInstanceRefs.Cast<ComObjectInstanceRef>()
-                             .FirstOrDefault(c => c.Number == coNumber);
-                if (co == null)
-                    throw new KeyNotFoundException($"ComObject {coRef} not found.");
-                return (device, co);
-            }
-
-            // Module-level: 3 parts "d{puid}:m{modulePuid}:c{number}"
+            // Module-level: prefer the indicated module instance (by index), else fall back.
             if (parts.Length == 3)
             {
-                if (!parts[0].StartsWith("d", StringComparison.Ordinal)
-                    || !parts[1].StartsWith("m", StringComparison.Ordinal)
-                    || !parts[2].StartsWith("c", StringComparison.Ordinal))
+                if (!parts[1].StartsWith("m", StringComparison.Ordinal))
                     throw new ArgumentException($"Invalid comobject ref: {coRef}");
+                if (!uint.TryParse(parts[1].Substring(1), out var moduleIndex))
+                    throw new ArgumentException($"Invalid module index in ref: {coRef}");
 
-                var device = FindDevice(parts[0]);
-                if (!uint.TryParse(parts[1].Substring(1), out var modulePuid))
-                    throw new ArgumentException($"Invalid module puid in ref: {coRef}");
-                if (!uint.TryParse(parts[2].Substring(1), out var coNumber))
-                    throw new ArgumentException($"Invalid comobject number in ref: {coRef}");
-
-                // Verified: P:Knx.Ets.Sdk.Project.ModuleInstance.Puid (from ProjectRelatedObjectWithPuid)
-                var module = device.ModuleInstances.Cast<ModuleInstance>()
-                                 .FirstOrDefault(m => m.Puid == modulePuid);
-                if (module == null)
-                    throw new KeyNotFoundException($"ModuleInstance m{modulePuid} not found on device.");
-
-                // Prefer active collection for module-level COs as well.
-                var co = module.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>()
-                             .FirstOrDefault(c => c.Number == coNumber)
-                      ?? module.ComObjectInstanceRefs.Cast<ComObjectInstanceRef>()
-                             .FirstOrDefault(c => c.Number == coNumber);
-                if (co == null)
-                    throw new KeyNotFoundException($"ComObject {coRef} not found.");
-                return (device, co);
+                var modules = device.ModuleInstances.Cast<ModuleInstance>().ToList();
+                if (moduleIndex < modules.Count)
+                {
+                    var hit = FindCoByNumber(modules[(int)moduleIndex], coNumber);
+                    if (hit != null) return (device, hit);
+                }
+                // Out-of-range index, or number not in that module (legacy "m0" ref for a
+                // later module): fall through to the device-wide scan below.
             }
 
-            throw new ArgumentException($"Invalid comobject ref: {coRef}");
+            var co = FindCoByNumberAnywhere(device, coNumber);
+            if (co == null)
+                throw new KeyNotFoundException($"ComObject {coRef} not found.");
+            return (device, co);
         }
 
         /// <summary>
         /// Build the canonical comobject ref for a CO.
-        /// #7: Module-level COs include the module Puid for uniqueness.
-        /// Verified: P:Knx.Ets.Sdk.Project.ComObjectInstanceRef.ParentModuleInstance
+        /// Module-level COs are identified by the module instance's 0-based position in the
+        /// device's module list, not by its Puid: a module instance's Puid is 0 for every
+        /// instance of the same module (its underlying model object carries no Puid), so the
+        /// Puid cannot distinguish two channels of a modular device. The com-object Number is
+        /// device-unique, so the (module index, number) pair is unambiguous.
         /// </summary>
         private static string BuildCoRef(long devicePuid, ComObjectInstanceRef co)
+            => BuildCoRef(devicePuid, co, ResolveModuleIndex(co));
+
+        /// <summary>
+        /// Build a comobject ref with a known module index (-1 = device-level). Callers that
+        /// already iterate module instances pass the loop index to avoid a lookup.
+        /// </summary>
+        private static string BuildCoRef(long devicePuid, ComObjectInstanceRef co, int moduleIndex)
+            => moduleIndex >= 0
+                ? $"d{devicePuid}:m{moduleIndex}:c{co.Number}"
+                : $"d{devicePuid}:c{co.Number}";
+
+        /// <summary>
+        /// Resolve a module CO's 0-based module index. Returns -1 for a device-level CO.
+        /// Matches the parent module instance by reference first; falls back to the module
+        /// that contains the CO's (device-unique) Number if reference matching fails.
+        /// </summary>
+        private static int ResolveModuleIndex(ComObjectInstanceRef co)
         {
             var parentModule = co.ParentModuleInstance;
-            if (parentModule != null)
-                return $"d{devicePuid}:m{parentModule.Puid}:c{co.Number}";
-            return $"d{devicePuid}:c{co.Number}";
+            if (parentModule == null) return -1;
+            var device = parentModule.Parent;
+            if (device == null) return -1;
+
+            int i = 0;
+            foreach (ModuleInstance m in device.ModuleInstances)
+            {
+                if (ReferenceEquals(m, parentModule)) return i;
+                i++;
+            }
+            i = 0;
+            foreach (ModuleInstance m in device.ModuleInstances)
+            {
+                if (ModuleContainsNumber(m, co.Number)) return i;
+                i++;
+            }
+            return -1;
+        }
+
+        private static bool ModuleContainsNumber(ModuleInstance module, uint number)
+            => module.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>().Any(c => c.Number == number)
+            || module.ComObjectInstanceRefs.Cast<ComObjectInstanceRef>().Any(c => c.Number == number);
+
+        private static ComObjectInstanceRef? FindCoByNumber(ModuleInstance module, uint number)
+            => module.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>().FirstOrDefault(c => c.Number == number)
+            ?? module.ComObjectInstanceRefs.Cast<ComObjectInstanceRef>().FirstOrDefault(c => c.Number == number);
+
+        /// <summary>
+        /// Find a com-object by its device-unique Number across the device-level collections
+        /// and every module instance (active collection preferred, then the full collection).
+        /// </summary>
+        private static ComObjectInstanceRef? FindCoByNumberAnywhere(Device device, uint number)
+        {
+            var co = device.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>().FirstOrDefault(c => c.Number == number)
+                  ?? device.ComObjectInstanceRefs.Cast<ComObjectInstanceRef>().FirstOrDefault(c => c.Number == number);
+            if (co != null) return co;
+            foreach (ModuleInstance m in device.ModuleInstances)
+            {
+                co = FindCoByNumber(m, number);
+                if (co != null) return co;
+            }
+            return null;
         }
 
         /// <summary>
@@ -786,7 +859,7 @@ namespace Knx.EtsBridge.Addin
             // Built defensively: any channel-traversal quirk just leaves objects ungrouped.
             var channelByCoRef = BuildChannelByCoRef(device, devicePuid);
 
-            void AddCos(IEnumerable<ComObjectInstanceRef> cos)
+            void AddCos(IEnumerable<ComObjectInstanceRef> cos, int moduleIndex)
             {
                 foreach (var co in cos)
                 {
@@ -797,12 +870,12 @@ namespace Knx.EtsBridge.Addin
                             links.Add(BuildGaRef(conn.GroupAddress));
                     }
 
-                    var coRef = BuildCoRef(devicePuid, co);
+                    var coRef = BuildCoRef(devicePuid, co, moduleIndex);
                     channelByCoRef.TryGetValue(coRef, out var channelLabel);
 
                     result.Add(new ComObjectInfo
                     {
-                        // #7: Use BuildCoRef for unique refs across modules.
+                        // Module index keeps refs unique across module instances.
                         Ref = coRef,
                         Number = co.Number,
                         Name = co.Name ?? "",
@@ -821,10 +894,12 @@ namespace Knx.EtsBridge.Addin
                 }
             }
 
-            AddCos(device.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>());
+            AddCos(device.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>(), -1);
+            int moduleIndex = 0;
             foreach (ModuleInstance mod in device.ModuleInstances)
             {
-                AddCos(mod.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>());
+                AddCos(mod.ActiveComObjectInstanceRefs.Cast<ComObjectInstanceRef>(), moduleIndex);
+                moduleIndex++;
             }
 
             return result;
@@ -841,7 +916,7 @@ namespace Knx.EtsBridge.Addin
         {
             var map = new Dictionary<string, string>();
 
-            void Index(System.Collections.IEnumerable channels)
+            void Index(System.Collections.IEnumerable channels, int moduleIndex)
             {
                 if (channels == null) return;
                 foreach (ChannelInstance ch in channels)
@@ -859,18 +934,20 @@ namespace Knx.EtsBridge.Addin
                     try
                     {
                         foreach (ComObjectInstanceRef co in ch.ActiveComObjectInstances)
-                            map[BuildCoRef(devicePuid, co)] = label;
+                            map[BuildCoRef(devicePuid, co, moduleIndex)] = label;
                     }
                     catch { /* skip this channel's objects */ }
                 }
             }
 
-            try { Index(device.ChannelInstances); } catch { }
+            try { Index(device.ChannelInstances, -1); } catch { }
             try
             {
+                int moduleIndex = 0;
                 foreach (ModuleInstance mod in device.ModuleInstances)
                 {
-                    try { Index(mod.ChannelInstances); } catch { }
+                    try { Index(mod.ChannelInstances, moduleIndex); } catch { }
+                    moduleIndex++;
                 }
             }
             catch { }
@@ -1492,7 +1569,26 @@ namespace Knx.EtsBridge.Addin
 
             var ga = FindGroupAddress(gaRef);
 
-            RunInMarker("Bridge: Link ComObject", () => co.Link(ga));
+            RunInMarker("Bridge: Link ComObject", () =>
+            {
+                try
+                {
+                    co.Link(ga);
+                }
+                catch (KeyNotFoundException ex)
+                {
+                    // The SDK can throw KeyNotFoundException ("The given key was not present
+                    // in the dictionary.") from deep inside its own link operation -- observed
+                    // when adding a second group address to a module com-object. That is an
+                    // internal SDK failure, not an unknown ref; rethrow as a non-not_found
+                    // error so it is not mistaken for a bad comObjectRef/gaRef. The marker is
+                    // discarded, so the project is left unchanged.
+                    throw new InvalidOperationException(
+                        $"SDK link operation failed for {comObjectRef} -> {gaRef} "
+                      + "(the SDK reported a missing dictionary key). The link was not applied.",
+                        ex);
+                }
+            });
 
             // The link always proceeds; attach a soft DPT-compatibility advisory so a wrong
             // wiring (e.g. a % object linked to a switch GA) is caught. Fully defensive:
@@ -1606,28 +1702,31 @@ namespace Knx.EtsBridge.Addin
             var (_, co) = FindComObject(comObjectRef);
             var ga = FindGroupAddress(gaRef);
 
-            // #10: Check if the link actually exists before unlinking.
-            // Connectors contains the list of links for this CO.
-            bool linkExists = false;
-            foreach (Connector conn in co.Connectors)
-            {
-                if (conn.GroupAddress != null && conn.GroupAddress.Id == ga.Id)
-                {
-                    linkExists = true;
-                    break;
-                }
-            }
-
-            if (!linkExists)
+            // Find the existing connector for this GA. Idempotent: an absent link is a no-op.
+            var connector = co.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.GroupAddress != null && c.GroupAddress.Id == ga.Id);
+            if (connector == null)
             {
                 // Idempotent: link already absent -> ok, no error.
                 return;
             }
 
-            // Removed IsActive guard for delete: protocol.md says delete is idempotent,
-            // and refusing to unlink an inactive object's existing link is surprising.
-
-            RunInMarker("Bridge: Unlink ComObject", () => co.Unlink(ga));
+            // Unlink via the connector's own GroupAddress instance (the exact wrapper the SDK
+            // compares against), then confirm the link is actually gone before committing.
+            // The SDK unlink can return without removing the connector; reading the live
+            // connector collection back and failing surfaces that instead of a false success.
+            // Removed IsActive guard: delete is idempotent and refusing to unlink an inactive
+            // object's existing link is surprising.
+            var linkedGa = connector.GroupAddress;
+            RunInMarker("Bridge: Unlink ComObject", () =>
+            {
+                co.Unlink(linkedGa);
+                if (co.Connectors.Cast<Connector>()
+                        .Any(c => c.GroupAddress != null && c.GroupAddress.Id == ga.Id))
+                    throw new InvalidOperationException(
+                        $"Unlink of {comObjectRef} -> {gaRef} did not remove the link "
+                      + "(the SDK reported success but the connector is still present).");
+            });
         }
 
         public void SetParameter(string deviceRef, string parameterRef, string value)
@@ -5929,16 +6028,17 @@ namespace Knx.EtsBridge.Addin
             var channels = new List<ChannelInstanceInfo>();
             foreach (ChannelInstance ch in device.ChannelInstances)
             {
-                channels.Add(BuildChannelInfo(ch, devPuid));
+                channels.Add(BuildChannelInfo(ch, devPuid, -1));
             }
 
             var modules = new List<ModuleInstanceInfo>();
+            int moduleIndex = 0;
             foreach (ModuleInstance mod in device.ModuleInstances)
             {
                 var modChannels = new List<ChannelInstanceInfo>();
                 foreach (ChannelInstance ch in mod.ChannelInstances)
                 {
-                    modChannels.Add(BuildChannelInfo(ch, devPuid));
+                    modChannels.Add(BuildChannelInfo(ch, devPuid, moduleIndex));
                 }
 
                 var args = new List<ModuleArgumentInfo>();
@@ -5965,7 +6065,7 @@ namespace Knx.EtsBridge.Addin
 
                 modules.Add(new ModuleInstanceInfo
                 {
-                    Ref = $"d{devPuid}:m{mod.Puid}",
+                    Ref = $"d{devPuid}:m{moduleIndex}",
 #if ETS5
                     // ETS5: ModuleInstance has ModuleId (string) instead of ModuleDefId.
                     Name = mod.ModuleId ?? "",
@@ -5978,6 +6078,7 @@ namespace Knx.EtsBridge.Addin
                     Channels = modChannels,
                     Arguments = args
                 });
+                moduleIndex++;
             }
 
             return new DeviceChannelsResult
@@ -5988,12 +6089,12 @@ namespace Knx.EtsBridge.Addin
             };
         }
 
-        private ChannelInstanceInfo BuildChannelInfo(ChannelInstance ch, long devPuid)
+        private ChannelInstanceInfo BuildChannelInfo(ChannelInstance ch, long devPuid, int moduleIndex)
         {
             var coRefs = new List<string>();
             foreach (ComObjectInstanceRef co in ch.ActiveComObjectInstances)
             {
-                coRefs.Add(BuildCoRef(devPuid, co));
+                coRefs.Add(BuildCoRef(devPuid, co, moduleIndex));
             }
 
             return new ChannelInstanceInfo
