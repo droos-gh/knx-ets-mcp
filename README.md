@@ -134,8 +134,8 @@ the option that matches where things run.
 On the ETS machine, just double-click **`Start-MCP-Server.exe`** from the extracted
 folder. **By default it serves Streamable HTTP on `0.0.0.0:8765/mcp`** (reachable on your
 LAN), **protected by a bearer token**, and talks to the AddIn over the local named pipe —
-no ETS TCP endpoint, no env vars to set. (The examples below call it by its internal name
-`knx-ets-mcp.exe`; for advanced options run it from a terminal.)
+no ETS TCP endpoint, no env vars to set. For advanced options (environment variables), run
+it from a terminal instead.
 
 On first start the server generates a random token, stores it for your Windows user
 (`%LOCALAPPDATA%\knx-ets-mcp\http-token`, reused on every later start) and prints it
@@ -143,9 +143,11 @@ together with the ready-to-paste `claude mcp add` command:
 
 ```bat
 :: Windows, on the ETS machine
-knx-ets-mcp.exe
+Start-MCP-Server.exe
 :: -> [knx-ets-mcp] Streamable HTTP on http://0.0.0.0:8765/mcp (auth: on -- C:\Users\you\AppData\Local\knx-ets-mcp\http-token)
 :: -> [knx-ets-mcp] Bearer token: <generated-token>
+:: -> [knx-ets-mcp] Connect with:
+:: ->   claude mcp add --scope user --transport http knx-ets http://<this-machine-ip>:8765/mcp --header "Authorization: Bearer <generated-token>"
 ```
 
 Change the bind with `MCP_HOST` / `MCP_PORT` / `MCP_PATH` if needed; `KNX_BRIDGE_TRANSPORT`
@@ -157,7 +159,7 @@ defaults to the local pipe, so you don't set it.
 
 ```bat
 set "MCP_AUTH_TOKEN=choose-a-long-random-secret"
-knx-ets-mcp.exe
+Start-MCP-Server.exe
 :: -> [knx-ets-mcp] Streamable HTTP on http://0.0.0.0:8765/mcp (auth: on -- MCP_AUTH_TOKEN)
 ```
 
@@ -199,7 +201,7 @@ launch the server, use stdio. The exe defaults to HTTP, so tell it to speak stdi
 {
   "mcpServers": {
     "knx-ets": {
-      "command": "C:\\Tools\\knx-ets-mcp.exe",
+      "command": "C:\\Tools\\Start-MCP-Server.exe",
       "env": { "MCP_TRANSPORT": "stdio" }
     }
   }
@@ -207,7 +209,7 @@ launch the server, use stdio. The exe defaults to HTTP, so tell it to speak stdi
 ```
 
 ```bat
-claude mcp add --scope user --transport stdio knx-ets -e MCP_TRANSPORT=stdio -- "C:\Tools\knx-ets-mcp.exe"
+claude mcp add --scope user --transport stdio knx-ets -e MCP_TRANSPORT=stdio -- "C:\Tools\Start-MCP-Server.exe"
 ```
 
 #### C. Server on a different machine than ETS (server → ETS over TCP)
@@ -271,7 +273,7 @@ enable **Bus read-only** in the AddIn's Configuration / Preferences (ETS 6) or p
 address, firmware — then returns `approval_required`. It is off by default.
 
 Each tool also carries standard MCP safety annotations (`readOnlyHint`,
-`destructiveHint`, `openWorldHint`), so clients that ask for confirmation on destructive
+`destructiveHint`, `idempotentHint`, `openWorldHint`), so clients that ask for confirmation on destructive
 tools will prompt before programming, group writes, resets or deletions.
 
 ## Status
@@ -288,7 +290,24 @@ Expect rough edges.
 
 ## For developers
 
-Building the AddIn yourself (ETS6 and ETS5 targets, providing the SDK DLLs, packaging) is
-documented in [BUILD.md](BUILD.md). The architecture, SDK details, and the AddIn↔MCP
-protocol are in [CLAUDE.md](CLAUDE.md), [docs/protocol.md](docs/protocol.md), and
+The repository has two .NET projects:
+
+- **ETS AddIn** (`addin/`, C#/.NET Framework 4.8, runs inside ETS). Building it yourself
+  (ETS6 and ETS5 targets, providing the SDK DLLs, packaging) is documented in
+  [BUILD.md](BUILD.md). Its pure security logic is unit-tested without the ETS SDK:
+  `dotnet test addin-tests`.
+- **MCP server** (`mcp-server/`, C#/.NET 10, official
+  [MCP C# SDK](https://github.com/modelcontextprotocol/csharp-sdk)). Needs only the
+  .NET 10 SDK; the test suite runs every tool end to end against an in-memory mock AddIn,
+  so no ETS is required:
+
+  ```bat
+  dotnet test mcp-server\tests\KnxEtsMcp.Tests
+  set "KNX_BRIDGE_TRANSPORT=mock" & dotnet run --project mcp-server\src\KnxEtsMcp
+  ```
+
+  Details (configuration, publishing the standalone exe) are in
+  [mcp-server/README.md](mcp-server/README.md).
+
+The architecture, SDK details, and the AddIn↔MCP protocol are in [CLAUDE.md](CLAUDE.md), [docs/protocol.md](docs/protocol.md), and
 [addin/README.md](addin/README.md).

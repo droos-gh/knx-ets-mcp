@@ -41,7 +41,7 @@ launches the server itself.
 
 ```bat
 :: Production (connects to the ETS AddIn via named pipe):
-knx-ets-mcp.exe
+Start-MCP-Server.exe
 
 :: Development (in-memory mock AddIn, no ETS needed), from source:
 set "KNX_BRIDGE_TRANSPORT=mock"
@@ -56,7 +56,7 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "knx-ets-bridge": {
-      "command": "C:\\Tools\\knx-ets-mcp.exe",
+      "command": "C:\\Tools\\Start-MCP-Server.exe",
       "env": {
         "MCP_TRANSPORT": "stdio"
       }
