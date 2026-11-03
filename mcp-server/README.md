@@ -12,22 +12,25 @@ to the ETS6 AddIn (running inside ETS on Windows), then returns the response.
 
 ## Setup
 
-```bash
+```bat
 cd mcp-server
 uv sync --all-extras
 ```
 
 ## Running
 
-```bash
-# Production (Windows, connects to ETS6 AddIn via named pipe):
-KNX_BRIDGE_TRANSPORT=pipe uv run python -m knx_ets_mcp.server
+```bat
+:: Production (connects to the ETS AddIn via named pipe):
+set "KNX_BRIDGE_TRANSPORT=pipe"
+uv run python -m knx_ets_mcp.server
 
-# Development / testing (any OS, in-memory mock AddIn):
-KNX_BRIDGE_TRANSPORT=mock uv run python -m knx_ets_mcp.server
+:: Development / testing (in-memory mock AddIn, no ETS needed):
+set "KNX_BRIDGE_TRANSPORT=mock"
+uv run python -m knx_ets_mcp.server
 
-# Via the FastMCP CLI (alternative):
-KNX_BRIDGE_TRANSPORT=mock uv run fastmcp run src/knx_ets_mcp/server.py:mcp
+:: Via the FastMCP CLI (alternative):
+set "KNX_BRIDGE_TRANSPORT=mock"
+uv run fastmcp run src/knx_ets_mcp/server.py:mcp
 ```
 
 The server communicates over **stdio** (the standard MCP transport for
@@ -42,7 +45,7 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "knx-ets-bridge": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-server", "python", "-m", "knx_ets_mcp.server"],
+      "args": ["run", "--directory", "C:\\path\\to\\mcp-server", "python", "-m", "knx_ets_mcp.server"],
       "env": {
         "KNX_BRIDGE_TRANSPORT": "mock"
       }
@@ -52,11 +55,11 @@ Add to your `claude_desktop_config.json`:
 ```
 
 Remove the `env` block (or set to `pipe`) when running against a real
-ETS6 instance on Windows.
+ETS6 instance.
 
 ## Tests
 
-```bash
+```bat
 uv run pytest -v
 ```
 

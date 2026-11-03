@@ -70,8 +70,7 @@ firmware.
   runs it only with a (free) **ETS App developer/test license** (bound to a KNX organization
   account) or with the ETS license check disabled; ETS itself must be licensed (Lite or
   higher).
-- **Windows** to run ETS: normal **x64 Windows**, or **Windows 11 ARM** in a VM on an
-  Apple Silicon Mac (**Parallels Desktop**, or the free **UTM**).
+- **Windows** (x64) to run ETS.
 - A **bus interface** configured in ETS for bus operations (KNXnet/IP or USB).
 - An **MCP-capable AI client** (e.g. Claude Desktop or Claude Code).
 - To run the MCP server (recommended: on the ETS machine): nothing extra — the bundled
@@ -98,7 +97,7 @@ download the single bundle **`knx-ets-mcp-<version>.zip`**. It contains everythi
 - **`Start-MCP-Server.exe`** — the MCP server (double-click to run).
 
 (A Python wheel is also included under `mcp-server-python/`, and attached to the release
-separately, for those who prefer to run the server with their own Python — e.g. on macOS.)
+separately, for those who prefer to run the server with their own Python.)
 
 > **Do not run `install.bat` from inside the zip.** Windows' built-in zip viewer extracts
 > only the single file you click to a temp folder, so the installer can't find the AddIn
@@ -167,12 +166,11 @@ knx-ets-mcp.exe
 :: -> [knx-ets-mcp] Streamable HTTP on http://0.0.0.0:8765/mcp (auth: on -- MCP_AUTH_TOKEN)
 ```
 
-Then, from your Mac (or any LAN machine), point Claude Code at the server's URL (use the
-Windows machine's IP) with the token:
+Then, from any machine on your LAN, point Claude Code at the server's URL (use the
+ETS machine's IP) with the token:
 
-```bash
-claude mcp add --scope user --transport http knx-ets http://<windows-ip>:8765/mcp \
-  --header "Authorization: Bearer <token>"
+```bat
+claude mcp add --scope user --transport http knx-ets http://<ets-pc-ip>:8765/mcp --header "Authorization: Bearer <token>"
 ```
 
 …or a portable project `.mcp.json` (change the host to your Windows IP and paste the
@@ -213,14 +211,13 @@ launch the server, use stdio. The exe defaults to HTTP, so tell it to speak stdi
 }
 ```
 
-```bash
-claude mcp add --scope user --transport stdio knx-ets \
-  -e MCP_TRANSPORT=stdio -- "C:\Tools\knx-ets-mcp.exe"
+```bat
+claude mcp add --scope user --transport stdio knx-ets -e MCP_TRANSPORT=stdio -- "C:\Tools\knx-ets-mcp.exe"
 ```
 
 #### C. Server on a different machine than ETS (server → ETS over TCP)
 
-To run the MCP server on another machine (e.g. on the Mac, ETS in a VM), the server reaches
+To run the MCP server on another machine than the ETS PC, the server reaches
 ETS over the **ETS TCP endpoint** instead of the pipe. Enable it in the AddIn's
 **Configuration / Preferences**: **Enable TCP endpoint**, **Port** (default `8730`),
 **Allow LAN**; the panel shows the endpoint and the **token** (authentication is always on:
@@ -229,13 +226,13 @@ own, to keep the same token across ETS restarts). Then run the server from this 
 the repo on that machine, install the release wheel once with
 `uv tool install ./knx_ets_mcp-<version>-py3-none-any.whl` and run `knx-ets-mcp` instead):
 
-```bash
-MCP_TRANSPORT=http \
-KNX_BRIDGE_TRANSPORT=tcp \
-KNX_BRIDGE_HOST=<ets-ip> \
-KNX_BRIDGE_PORT=8730 \
-KNX_BRIDGE_TOKEN=<token-from-the-panel> \
-uv run --directory /path/to/knx_addin/mcp-server knx-ets-mcp
+```bat
+set "MCP_TRANSPORT=http"
+set "KNX_BRIDGE_TRANSPORT=tcp"
+set "KNX_BRIDGE_HOST=<ets-ip>"
+set "KNX_BRIDGE_PORT=8730"
+set "KNX_BRIDGE_TOKEN=<token-from-the-panel>"
+uv run --directory C:\path\to\knx-ets-mcp\mcp-server knx-ets-mcp
 ```
 
 Set `KNX_BRIDGE_TOKEN` to the token shown in the AddIn panel (a missing or wrong token is

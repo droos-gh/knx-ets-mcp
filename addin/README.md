@@ -4,16 +4,16 @@ ETS6 project-level AddIn that exposes an IPC named-pipe server for the
 knx-ets-bridge MCP adapter. Built against the ETS6 6.4 SDK by default; the
 resulting DLL runs on ETS 6.3 and 6.4.
 
-## Build on macOS
+## Build (Windows)
 
 Prerequisites: .NET SDK 8.0+ (tested with 10.0).
 
-```bash
-cd addin/
+```bat
+cd addin
 dotnet build -c Release
 ```
 
-The build uses `Microsoft.NETFramework.ReferenceAssemblies` for cross-compilation
+The build uses `Microsoft.NETFramework.ReferenceAssemblies` to target net48
 and resolves the ETS SDK DLLs from the configured `EtsDllPath` (see BUILD.md).
 Output: `bin/Release/net48/Knx.EtsBridge.Addin.dll` plus NuGet runtime dependencies
 (System.Text.Json etc.) -- all are needed for sideloading.
