@@ -16,11 +16,11 @@ public sealed class NavigationTools(IKnxBridge bridge)
         Navigate the ETS UI to a specific object (device, GA, line, building part, etc.).
         """)]
     public async Task<JsonNode?> NavigateTo(
-        string ref,
+        string @ref,
         CancellationToken cancellationToken = default)
     {
         var parameters = new JsonObject()
-            .Set("ref", ref);
+            .Set("ref", @ref);
         var result = await bridge.CallAsync("project.navigateTo", parameters, null, cancellationToken);
         return result;
     }
