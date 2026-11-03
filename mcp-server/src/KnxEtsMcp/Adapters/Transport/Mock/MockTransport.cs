@@ -353,7 +353,7 @@ public sealed partial class MockTransport : ITransport
     /// <summary>A deep copy (Python <c>copy.deepcopy</c>), also used before re-parenting a node.</summary>
     private static JsonNode? Clone(JsonNode? n) => n?.DeepClone();
 
-    /// <summary>Appends via the non-generic <see cref="JsonArray.Add(JsonNode?)"/>.</summary>
+    /// <summary>Appends via the non-generic <c>JsonArray.Add(JsonNode?)</c>, never the generic reflection-based overload.</summary>
     private static void Push(JsonArray array, JsonNode? item) => array.Add(item);
 
     /// <summary>An internal string field (refs etc. are always strings).</summary>
@@ -411,13 +411,13 @@ public sealed partial class MockTransport : ITransport
     {
         if (!Py.Truthy(coDpt) || !Py.Truthy(gaDpt))
             return null;
-        static string Main(JsonNode? s)
+        static string MainNumber(JsonNode? s)
         {
             var text = Py.RequireStr(s, "split");
             var dot = text.IndexOf('.', StringComparison.Ordinal);
             return dot < 0 ? text : text[..dot];
         }
-        if (!string.Equals(Main(coDpt).ToLowerInvariant(), Main(gaDpt).ToLowerInvariant(), StringComparison.Ordinal))
+        if (!string.Equals(MainNumber(coDpt).ToLowerInvariant(), MainNumber(gaDpt).ToLowerInvariant(), StringComparison.Ordinal))
         {
             return $"DPT mismatch: com-object is {Py.Str(coDpt)} but group address is {Py.Str(gaDpt)}. "
                 + "They will not exchange data correctly -- align the DPTs.";
