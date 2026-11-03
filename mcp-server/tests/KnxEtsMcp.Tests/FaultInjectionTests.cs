@@ -18,7 +18,11 @@ public sealed class FaultInjectionTests
     /// <summary>Transport whose responses and failures are scripted by the test; counts calls.</summary>
     private sealed class FakeTransport : ITransport
     {
-        public string Token => "fake-token";
+        /// <summary>Settable so a test can simulate the AddIn issuing a new token on restart.</summary>
+        public string Token { get; set; } = "fake-token";
+
+        /// <summary>The token stamped on each sent request, in send order.</summary>
+        public List<string?> SentTokens { get; } = new();
 
         /// <summary>Produces the response for a request (or throws to simulate a failure).</summary>
         public Func<JsonObject, JsonNode?> OnSend { get; set; }
@@ -46,6 +50,7 @@ public sealed class FaultInjectionTests
         {
             SendCalls++;
             Requests.Add(request);
+            SentTokens.Add(request["token"]?.GetValue<string>());
             try
             {
                 return Task.FromResult(OnSend(request));
@@ -241,5 +246,81 @@ public sealed class FaultInjectionTests
         var client = new KnxBridgeClient(t);
 
         AssertFailure(await ProjectInfoAsync(client), "reconnect unsuccessful");
+    }
+
+    // -- Stream resynchronisation (review findings) ---------------------------------
+
+    private static JsonObject OkFor(JsonObject request) => new()
+    {
+        ["id"] = IdOf(request),
+        ["ok"] = true,
+        ["result"] = new JsonObject { ["projectId"] = "p1" },
+        ["projectRevision"] = "rev-001",
+    };
+
+    // Caller cancellation mid-exchange closes the connection, so the AddIn's late reply
+    // is never read by the next request; the next request reconnects.
+    [Fact]
+    public async Task Cancellation_ClosesConnection_NextRequestReconnects()
+    {
+        var calls = 0;
+        var t = new FakeTransport
+        {
+            OnSend = request => ++calls == 1 ? throw new OperationCanceledException() : OkFor(request),
+        };
+        var client = new KnxBridgeClient(t);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ProjectInfoAsync(client));
+        Assert.Equal(1, t.CloseCalls);
+
+        var second = await ProjectInfoAsync(client);
+
+        Assert.True(second.IsSuccess);
+        Assert.Equal(2, t.ConnectCalls);
+    }
+
+    // A response for another request means the stream is out of step: the connection is
+    // dropped, so the following request starts clean instead of lagging by one.
+    [Fact]
+    public async Task IdMismatch_ClosesConnection_NextRequestSucceedsOnFreshConnection()
+    {
+        var calls = 0;
+        var t = new FakeTransport
+        {
+            OnSend = request => ++calls == 1
+                ? new JsonObject { ["id"] = "stale-id", ["ok"] = true, ["result"] = new JsonObject() }
+                : OkFor(request),
+        };
+        var client = new KnxBridgeClient(t);
+
+        AssertFailure(await ProjectInfoAsync(client), "id mismatch");
+        Assert.Equal(1, t.CloseCalls);
+
+        var second = await ProjectInfoAsync(client);
+
+        Assert.True(second.IsSuccess);
+        Assert.Equal(2, t.ConnectCalls);
+    }
+
+    // After a transport failure the retry carries the token the reconnect obtained (the
+    // AddIn generates a new one when it restarts), not the stale one.
+    [Fact]
+    public async Task RetryAfterReconnect_UsesTheRefreshedToken()
+    {
+        var calls = 0;
+        var t = new FakeTransport { Token = "old-token" };
+        t.OnConnect = attempt =>
+        {
+            if (attempt == 2)
+                t.Token = "new-token";
+            return null;
+        };
+        t.OnSend = request => ++calls == 1 ? throw new TransportException("broken pipe") : OkFor(request);
+        var client = new KnxBridgeClient(t);
+
+        var result = await ProjectInfoAsync(client);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new string?[] { "old-token", "new-token" }, t.SentTokens);
     }
 }

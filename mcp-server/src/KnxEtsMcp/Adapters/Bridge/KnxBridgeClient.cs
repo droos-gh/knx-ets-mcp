@@ -12,7 +12,11 @@ namespace KnxEtsMcp.Adapters.Bridge;
 /// <item>adds a fresh UUID idempotency key per mutating call, reused only when this
 /// client itself retries after a transport failure (docs/protocol.md);</item>
 /// <item>validates the response envelope (shape, id match) and maps protocol errors;</item>
-/// <item>on a transport failure closes, reconnects and retries once;</item>
+/// <item>on a transport failure closes, reconnects and retries once (with the token the
+/// reconnect read, which changes when the AddIn restarted);</item>
+/// <item>closes the connection whenever the stream may be out of step (cancellation
+/// mid-exchange, a response that is not for this request), so the next call starts on a
+/// fresh connection instead of reading a stale response;</item>
 /// <item>serializes all exchanges, because the transport is a single connection.</item>
 /// </list>
 /// The transport is connected lazily on the first request.
@@ -46,10 +50,10 @@ public sealed class KnxBridgeClient : IKnxBridge, IAsyncDisposable
                     return Result<JsonNode?>.Fail(connect.Error!);
             }
 
+            // The token is (re)stamped on every send, see SendOnceAsync.
             var request = new JsonObject
             {
                 ["id"] = requestId,
-                ["token"] = _transport.Token,
                 ["method"] = method,
                 ["params"] = parameters ?? new JsonObject(),
             };
@@ -60,6 +64,12 @@ public sealed class KnxBridgeClient : IKnxBridge, IAsyncDisposable
                 request["expectedProjectRevision"] = expectedRevision;
 
             var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccess && !IsResponseFor(response.Value, requestId))
+            {
+                // A stale or misrouted line: the stream is out of step with our requests,
+                // so drop the connection rather than letting every later call lag by one.
+                await CloseQuietlyAsync().ConfigureAwait(false);
+            }
             return response.Bind(r => ParseResponse(r, requestId));
         }
         finally
@@ -91,7 +101,7 @@ public sealed class KnxBridgeClient : IKnxBridge, IAsyncDisposable
     {
         try
         {
-            return Result<JsonNode?>.Ok(await _transport.SendAsync(request, cancellationToken).ConfigureAwait(false));
+            return Result<JsonNode?>.Ok(await SendOnceAsync(request, cancellationToken).ConfigureAwait(false));
         }
         catch (TransportException)
         {
@@ -104,12 +114,32 @@ public sealed class KnxBridgeClient : IKnxBridge, IAsyncDisposable
 
         try
         {
-            return Result<JsonNode?>.Ok(await _transport.SendAsync(request, cancellationToken).ConfigureAwait(false));
+            return Result<JsonNode?>.Ok(await SendOnceAsync(request, cancellationToken).ConfigureAwait(false));
         }
         catch (TransportException)
         {
             await CloseQuietlyAsync().ConfigureAwait(false);
             return Result<JsonNode?>.Fail(BridgeError.Internal, "Transport failed after reconnect");
+        }
+    }
+
+    /// <summary>
+    /// One exchange with the current connection's token. If the caller cancels while the
+    /// request may already be on the wire, the AddIn's reply would arrive later on this
+    /// connection and be read by the NEXT request -- so the connection is closed before
+    /// the cancellation propagates.
+    /// </summary>
+    private async Task<JsonNode?> SendOnceAsync(JsonObject request, CancellationToken cancellationToken)
+    {
+        request["token"] = _transport.Token;
+        try
+        {
+            return await _transport.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            await CloseQuietlyAsync().ConfigureAwait(false);
+            throw;
         }
     }
 
@@ -152,6 +182,10 @@ public sealed class KnxBridgeClient : IKnxBridge, IAsyncDisposable
             StringOr(error["code"], BridgeError.Internal),
             StringOr(error["message"], "Unknown error from AddIn"));
     }
+
+    /// <summary>True when <paramref name="response"/> is an envelope carrying <paramref name="requestId"/>.</summary>
+    private static bool IsResponseFor(JsonNode? response, string requestId)
+        => response is JsonObject envelope && IsString(envelope["id"], requestId);
 
     private static bool IsString(JsonNode? node, string expected)
         => node is JsonValue v && v.TryGetValue<string>(out var s) && s == expected;

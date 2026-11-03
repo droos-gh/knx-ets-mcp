@@ -868,6 +868,16 @@ namespace Knx.EtsBridge.Addin
                     }
                 }
 
+                // Bus-write gate, evaluated for EVERY method before the mutating /
+                // non-mutating split, so it never depends on MutatingMethods being in
+                // sync with BusWritePolicy. "Bus read-only" blocks every bus write (also
+                // an idempotent replay of an earlier one); firmware.update additionally
+                // needs "Unattended".
+                var busDecision = BusWritePolicy.Evaluate(
+                    method, _approvalManager.BusReadOnly, _approvalManager.Unattended);
+                if (!busDecision.IsAllowed)
+                    return ErrorResponse(id, ErrorCodes.ApprovalRequired, busDecision.Reason);
+
                 if (MutatingMethods.Contains(method))
                 {
                     if (string.IsNullOrEmpty(idempotencyKey))
@@ -888,13 +898,6 @@ namespace Knx.EtsBridge.Addin
                                 return BuildSuccessResponse(id, cached.ResultJson);
                             _idempotencyCache.TryRemove(cacheKey, out _);
                         }
-
-                        // Bus-write gate: "Bus read-only" preference blocks every bus
-                        // write; firmware.update additionally needs "Unattended".
-                        var busDecision = BusWritePolicy.Evaluate(
-                            method, _approvalManager.BusReadOnly, _approvalManager.Unattended);
-                        if (!busDecision.IsAllowed)
-                            return ErrorResponse(id, ErrorCodes.ApprovalRequired, busDecision.Reason);
 
                         JToken? parms = root["params"];
 
@@ -926,9 +929,6 @@ namespace Knx.EtsBridge.Addin
                 }
 
                 // --- Non-mutating request path (no idempotencyKey required) ---
-
-                // firmware.update approval is handled inside the mutating path above.
-                // (firmware.update is always in MutatingMethods, so this is dead code defense)
 
                 JToken? parmsNonMut = root["params"];
 

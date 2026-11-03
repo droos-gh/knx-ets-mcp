@@ -56,6 +56,12 @@ public sealed class TcpTransport : ITransport
             client.Dispose();
             throw new TransportException($"Cannot connect to ETS AddIn at {_host}:{_port}: {ex.Message}", ex);
         }
+        catch (OperationCanceledException)
+        {
+            // Caller cancellation: do not leak the socket.
+            client.Dispose();
+            throw;
+        }
 
         _client = client;
         _lines = new JsonLineStream(client.GetStream());

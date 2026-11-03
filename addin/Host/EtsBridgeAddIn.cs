@@ -189,6 +189,13 @@ namespace Knx.EtsBridge.Addin
             }
         }
 
+#if ETS5
+        /// <summary>Per-user file holding the ETS5 panel settings (ETS5 does not persist them).</summary>
+        private static string Ets5ConfigFilePath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "knx-ets-bridge", "ets5-config.xml");
+#endif
+
         public void Initialize(IInitializationContext initializationContext)
         {
             // #1: The bridge state is process-wide (static). If the bridge is already
@@ -221,6 +228,14 @@ namespace Knx.EtsBridge.Addin
             // Load persisted user configuration (e.g. Unattended firmware update flag).
             _userConfiguration = Addin.UserConfiguration.LoadFromDocument(
                 initializationContext.UserConfiguration);
+#if ETS5
+            // ETS5 has no configuration dialog and does not persist the AddIn
+            // configuration: the panel saves it to a per-user file instead, restored here
+            // so safety settings (Bus read-only) survive an ETS restart / project switch.
+            var savedEts5Config = Addin.UserConfiguration.LoadFromFile(Ets5ConfigFilePath);
+            if (savedEts5Config != null)
+                _userConfiguration = savedEts5Config;
+#endif
 
             // --- Version guard: refuse to run on anything other than 6.3.x ---
             var versionError = VersionGuard.Check();
@@ -542,12 +557,19 @@ namespace Knx.EtsBridge.Addin
                     RestartIpcServer();
                     // Show the effective token (a generated one when the box was left empty).
                     tokBox.Text = _userConfiguration?.Token ?? "";
+                    // Persist (incl. the effective token) so the settings survive a restart.
+                    if (_userConfiguration != null && !_userConfiguration.SaveToFile(Ets5ConfigFilePath))
+                    {
+                        System.Diagnostics.Trace.TraceWarning(
+                            $"[EtsBridge] Could not save the ETS5 configuration to {Ets5ConfigFilePath}; "
+                          + "settings apply to this ETS session only.");
+                    }
                 };
                 panel.Children.Add(applyBtn);
 
                 panel.Children.Add(new TextBlock
                 {
-                    Text = "Note: on ETS5 these settings apply to the running bridge; re-apply after an ETS restart.",
+                    Text = "Settings are saved for your Windows user (%LOCALAPPDATA%\\knx-ets-bridge\\ets5-config.xml) and restored when ETS starts.",
                     FontStyle = FontStyles.Italic,
                     Foreground = System.Windows.Media.Brushes.Gray,
                     TextWrapping = TextWrapping.Wrap,

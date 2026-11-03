@@ -23,6 +23,7 @@
   <ItemGroup>
     <Compile Include="../addin/Host/BridgeToken.cs" Link="Sources/BridgeToken.cs" />
     <Compile Include="../addin/Host/BusWritePolicy.cs" Link="Sources/BusWritePolicy.cs" />
+    <Compile Include="../addin/Host/UserConfiguration.cs" Link="Sources/UserConfiguration.cs" />
   </ItemGroup>
 
   <ItemGroup>

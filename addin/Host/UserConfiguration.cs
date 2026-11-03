@@ -89,6 +89,52 @@ namespace Knx.EtsBridge.Addin
         }
 
         /// <summary>
+        /// Load a configuration saved with <see cref="SaveToFile"/>. Returns null when the
+        /// file does not exist or cannot be read/parsed (the caller then keeps its default).
+        /// Used by the ETS5 build, whose host does not persist the AddIn configuration.
+        /// </summary>
+        public static UserConfiguration? LoadFromFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    return null;
+                var document = new XmlDocument();
+                document.Load(path);
+                return LoadFromDocument(document);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is XmlException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Persist this configuration to <paramref name="path"/> (directory created if
+        /// needed; written to a temp file, then moved into place). Returns false when the
+        /// file cannot be written.
+        /// </summary>
+        public bool SaveToFile(string path)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+                var temp = path + ".tmp";
+                GetDocument().Save(temp);
+                if (File.Exists(path))
+                    File.Delete(path);
+                File.Move(temp, path);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is XmlException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Serialize this instance to an <see cref="XmlDocument"/> that ETS
         /// reads from the UserConfiguration property to persist.
         /// </summary>
