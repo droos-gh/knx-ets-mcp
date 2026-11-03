@@ -85,7 +85,7 @@ You do **not** need to build anything — download the release artifacts.
 
 ### 1. Download the latest release
 
-From the [GitHub **Releases** page](https://github.com/knx-ai/knx-ets-mcp/releases),
+From the [GitHub **Releases** page](https://github.com/droos-gh/knx-ets-mcp/releases),
 download the single bundle **`knx-ets-mcp-<version>.zip`**. It contains everything:
 
 - the ETS AddIn (for ETS 5 and ETS 6) + the installer, and
