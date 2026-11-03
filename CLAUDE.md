@@ -210,19 +210,12 @@ thread and an undo marker (see Hard constraints).
 
 ## Build and runtime environment
 
-- **Build: macOS.** `dotnet build` (dotnet 10 present) with
-  `Microsoft.NETFramework.ReferenceAssemblies` cross-compiles net48 without Mono.
-  SDK DLLs via `HintPath`, `Private=false`. Clean without WPF; buildable with WPF but
-  officially "fragile".
-- **Run: Windows only.** Mac is Apple Silicon (M5 Pro, arm64) -> ETS6 under
-  **Parallels Desktop (latest version) + Windows 11 ARM** (x64 emulation),
-  MyKNX online license. UTM possible (USB passthrough fragile), VMware Fusion has
-  documented ETS6 licensing issues.
+- **Windows.** Build, run and test on Windows: `dotnet build` with
+  `Microsoft.NETFramework.ReferenceAssemblies` targets net48. SDK DLLs via `HintPath`,
+  `Private=false`.
 - **Sideload:** copy DLL + `AddInManifest.xml` to
   `C:\ProgramData\KNX\ETS6\Apps\AddIns\<AppId>\`. No KNX approval needed for local
-  use. Via Shared Folder Mac->VM.
-- **Division of labor:** Claude builds/tests the macOS side (AddIn build, MCP server,
-  SDK analysis). ETS runtime tests manually in the Windows VM.
+  use.
 
 ## Distribution & signature
 
@@ -492,8 +485,7 @@ manual-vs-LLM edits, Windows Named Pipe ACLs, and crash recovery.
 
 ## Tooling notes
 
-- `dotnet` 10 under `/opt/homebrew/bin`. Decompiler not needed so far: the SDK XML
-  documentation provides the public API. If needed: `dotnet tool install -g ilspycmd`.
+- Decompiler not needed so far: the SDK XML documentation provides the public API. If needed: `dotnet tool install -g ilspycmd`.
 - CHM API documentation (`ETS6 SDK.chm`) ships with the ETS6 SDK download.
 
 ## Working rules (project-specific)
