@@ -96,18 +96,13 @@ Write-Host "Done. Start ETS and open a project; the 'KNX-ETS MCP Bridge' AddIn s
 # Big, unmissable next step: start the MCP server. Only shown when the server is bundled
 # in this folder (the full release zip). Keep it running while the AI assistant is used.
 $mcpExe = Get-ChildItem -Path $root -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-$mcpWhl = Get-ChildItem -Path $root -Recurse -Filter '*.whl' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($mcpExe -or $mcpWhl) {
+if ($mcpExe) {
     Write-Host ""
     Write-Host "  ============================================================  " -ForegroundColor Black -BackgroundColor Green
     Write-Host "   NEXT STEP  ->  start the MCP server (leave it running)         " -ForegroundColor Black -BackgroundColor Green
-    if ($mcpExe) {
-        Write-Host "   Double-click:  $($mcpExe.Name)                             " -ForegroundColor Black -BackgroundColor Green
-    }
+    Write-Host "   Double-click:  $($mcpExe.Name)                             " -ForegroundColor Black -BackgroundColor Green
     Write-Host "  ============================================================  " -ForegroundColor Black -BackgroundColor Green
     Write-Host ""
     Write-Host "It serves the AI client over HTTP on http://0.0.0.0:8765/mcp by default." -ForegroundColor Gray
-    if ($mcpWhl) {
-        Write-Host "Or with your own Python:  pip install `"$($mcpWhl.FullName)`"  then run:  knx-ets-mcp" -ForegroundColor Gray
-    }
+    Write-Host "It prints the bearer token and the 'claude mcp add' command to use at startup." -ForegroundColor Gray
 }
