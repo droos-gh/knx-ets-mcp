@@ -266,8 +266,10 @@ namespace Knx.EtsBridge.Addin
             if (_userConfiguration != null)
             {
                 _approvalManager.Unattended = _userConfiguration.UnattendedFirmwareUpdate;
+                _approvalManager.BusReadOnly = _userConfiguration.BusReadOnly;
                 System.Diagnostics.Trace.TraceInformation(
-                    $"[EtsBridge] Loaded persisted Unattended={_userConfiguration.UnattendedFirmwareUpdate}.");
+                    $"[EtsBridge] Loaded persisted Unattended={_userConfiguration.UnattendedFirmwareUpdate}, "
+                  + $"BusReadOnly={_userConfiguration.BusReadOnly}.");
             }
 
             // Start the IPC server (pipe + optional TCP) from the persisted config.
@@ -383,22 +385,6 @@ namespace Knx.EtsBridge.Addin
                 panel.Children.Add(new Separator { Margin = new Thickness(0, 0, 0, 8), Visibility = Visibility.Hidden });
             }
 
-            // --- Auth status warning (only relevant when the TCP endpoint is exposed) ---
-            // With TCP off, only the local named pipe is used (restricted to the current
-            // Windows user SID), so a missing token is not a network-exposure risk.
-            TextBlock? authWarning = null;
-            if (_ipcServer != null && _ipcServer.TcpEnabled && !_ipcServer.AuthRequired)
-            {
-                authWarning = new TextBlock
-                {
-                    Text = "Auth: DISABLED - no token (anyone on the network can control ETS)",
-                    Foreground = System.Windows.Media.Brushes.Red,
-                    FontWeight = FontWeights.Bold,
-                    Margin = new Thickness(0, 0, 0, 4)
-                };
-                panel.Children.Add(authWarning);
-            }
-
             // --- Unattended mode: read-only indicator (setting lives in Configuration dialog) ---
             var approvalMgr = _approvalManager;
             var unattendedText = new TextBlock
@@ -408,6 +394,28 @@ namespace Knx.EtsBridge.Addin
                 ToolTip = "Change this setting in the app Configuration dialog (ETS settings)."
             };
             panel.Children.Add(unattendedText);
+
+            // --- Bus read-only indicator (setting lives in the Configuration dialog / ETS5 panel) ---
+            var busModeText = new TextBlock
+            {
+                Margin = new Thickness(0, 2, 0, 0),
+                FontStyle = FontStyles.Italic
+            };
+            panel.Children.Add(busModeText);
+
+            Action updateSafetyIndicators = () =>
+            {
+                var unattendedState = approvalMgr?.Unattended == true ? "ON" : "OFF";
+                unattendedText.Text = $"Unattended firmware update: {unattendedState}";
+
+                bool busReadOnly = approvalMgr?.BusReadOnly == true;
+                busModeText.Text = busReadOnly
+                    ? "Bus: READ-ONLY (programming / group writes / resets blocked)"
+                    : "Bus: read + write (programming runs automatically)";
+                busModeText.Foreground = busReadOnly
+                    ? System.Windows.Media.Brushes.DarkGreen
+                    : System.Windows.Media.Brushes.Gray;
+            };
 #if ETS5
             // firmware.update is not supported on ETS5, and there is no Configuration
             // dialog to change it in -- hide this line on ETS5.
@@ -491,6 +499,15 @@ namespace Knx.EtsBridge.Addin
                 portRow.Children.Add(portBox);
                 panel.Children.Add(portRow);
 
+                var busReadOnlyCheck = new CheckBox
+                {
+                    Content = "Bus read-only (block programming, group writes, resets)",
+                    IsChecked = cfg0.BusReadOnly,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Margin = new Thickness(0, 0, 0, 2)
+                };
+                panel.Children.Add(busReadOnlyCheck);
+
                 var tokRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
                 tokRow.Children.Add(new TextBlock { Text = "Token: ", VerticalAlignment = VerticalAlignment.Center });
                 var tokBox = new TextBox
@@ -499,7 +516,7 @@ namespace Knx.EtsBridge.Addin
                     Width = 260,
                     VerticalAlignment = VerticalAlignment.Center,
                     FontFamily = new System.Windows.Media.FontFamily("Consolas, Courier New, monospace"),
-                    ToolTip = "Empty = no authentication (trusted LAN only)."
+                    ToolTip = "Auth token (always required). Empty = generate a new random token."
                 };
                 tokRow.Children.Add(tokBox);
                 panel.Children.Add(tokRow);
@@ -518,8 +535,13 @@ namespace Knx.EtsBridge.Addin
                     if (int.TryParse((portBox.Text ?? "").Trim(), out var p) && p > 0 && p < 65536)
                         cfg.TcpPort = p;
                     cfg.Token = (tokBox.Text ?? "").Trim();
+                    cfg.BusReadOnly = busReadOnlyCheck.IsChecked == true;
                     _userConfiguration = cfg;
+                    if (_approvalManager != null)
+                        _approvalManager.BusReadOnly = cfg.BusReadOnly;
                     RestartIpcServer();
+                    // Show the effective token (a generated one when the box was left empty).
+                    tokBox.Text = _userConfiguration?.Token ?? "";
                 };
                 panel.Children.Add(applyBtn);
 
@@ -599,9 +621,8 @@ namespace Knx.EtsBridge.Addin
                     logTextBox.ScrollToEnd();
                 }
 
-                // Unattended indicator (may change via Configuration dialog at any time)
-                var state = approvalMgr?.Unattended == true ? "ON" : "OFF";
-                unattendedText.Text = $"Unattended firmware update: {state}";
+                // Safety indicators (may change via Configuration dialog at any time)
+                updateSafetyIndicators();
                 updateTcpStatus();
             };
 
@@ -614,8 +635,7 @@ namespace Knx.EtsBridge.Addin
                 statusText.Foreground = connected
                     ? System.Windows.Media.Brushes.DarkGreen
                     : System.Windows.Media.Brushes.Gray;
-                var state = approvalMgr?.Unattended == true ? "ON" : "OFF";
-                unattendedText.Text = $"Unattended firmware update: {state}";
+                updateSafetyIndicators();
                 updateTcpStatus();
             }
 
@@ -651,7 +671,7 @@ namespace Knx.EtsBridge.Addin
 #if ETS5
         // ETS5: this 2-arg overload IS the config entry point (no IEditAddInConfiguration).
         // ETS5 has no IDialogService here; run with persisted UserConfiguration
-        // / defaults (token may be empty = no-auth on trusted LAN).
+        // / defaults (an empty token is replaced by a generated random token).
         public bool ShowConfigurationDialog(XmlDocument configuration, XmlDocument userConfiguration)
         {
             return false;
@@ -687,6 +707,7 @@ namespace Knx.EtsBridge.Addin
                 : userConfig.Token;
             var dialog = new ConfigurationDialog(
                 userConfig.UnattendedFirmwareUpdate,
+                userConfig.BusReadOnly,
                 userConfig.TcpEnabled,
                 userConfig.TcpPort,
                 userConfig.TcpAllowLan,
@@ -698,6 +719,7 @@ namespace Knx.EtsBridge.Addin
             {
                 _ipcServer?.Log("Config OK -> saving + restarting IPC", "---");
                 userConfig.UnattendedFirmwareUpdate = dialog.UnattendedFirmwareUpdate;
+                userConfig.BusReadOnly = dialog.BusReadOnly;
                 userConfig.TcpEnabled = dialog.TcpEnabled;
                 userConfig.TcpPort = dialog.TcpPort;
                 userConfig.TcpAllowLan = dialog.TcpAllowLan;
@@ -708,12 +730,14 @@ namespace Knx.EtsBridge.Addin
                 if (_approvalManager != null)
                 {
                     _approvalManager.Unattended = userConfig.UnattendedFirmwareUpdate;
+                    _approvalManager.BusReadOnly = userConfig.BusReadOnly;
                 }
 
                 // Restart the IPC server so TCP settings take effect immediately.
                 RestartIpcServer();
                 System.Diagnostics.Trace.TraceInformation(
                     $"[EtsBridge] Configuration saved + IPC restarted: Unattended={userConfig.UnattendedFirmwareUpdate}, "
+                  + $"BusReadOnly={userConfig.BusReadOnly}, "
                   + $"TcpEnabled={userConfig.TcpEnabled}, TcpPort={userConfig.TcpPort}, "
                   + $"TcpAllowLan={userConfig.TcpAllowLan}.");
                 return true;
@@ -806,19 +830,25 @@ namespace Knx.EtsBridge.Addin
                 _ipcServer = null;
             }
 
-            bool tcpEnabled = _userConfiguration?.TcpEnabled ?? false;
-            int tcpPort = _userConfiguration?.TcpPort ?? 8730;
-            bool tcpAllowLan = _userConfiguration?.TcpAllowLan ?? false;
-            // Pass token as-is: empty string means NO authentication.
-            string? token = _userConfiguration?.Token;
-            _ipcServer = new IpcServer(_gateway, _dispatcher, _approvalManager,
-                                       tcpEnabled, tcpPort, tcpAllowLan, token);
+            // Authentication is always on. An empty "Token" preference means "generate a
+            // random one"; it is stored back into the in-memory configuration so the panel
+            // and Configuration dialog show it and it stays stable for this ETS session
+            // (and across restarts once the dialog is confirmed, which persists it).
+            var config = _userConfiguration ?? new UserConfiguration();
+            config.Token = BridgeToken.Resolve(config.Token);
+            _userConfiguration = config;
+
+            bool tcpEnabled = config.TcpEnabled;
+            int tcpPort = config.TcpPort;
+            bool tcpAllowLan = config.TcpAllowLan;
+            _ipcServer = new IpcServer(_gateway, _dispatcher, _approvalManager, config.Token,
+                                       tcpEnabled, tcpPort, tcpAllowLan);
             _sessionWriteFailed = !_ipcServer.Start();
             System.Diagnostics.Trace.TraceInformation(
                 $"[EtsBridge] IPC server (re)started. Pipe='{_ipcServer.PipeName}', "
               + $"TcpEnabled={tcpEnabled}, TcpPort={tcpPort}, TcpAllowLan={tcpAllowLan}.");
             _ipcServer.Log(
-                $"Config applied: Unattended={_userConfiguration?.UnattendedFirmwareUpdate}, "
+                $"Config applied: Unattended={config.UnattendedFirmwareUpdate}, BusReadOnly={config.BusReadOnly}, "
               + $"TcpEnabled={tcpEnabled}, TcpPort={tcpPort}, TcpAllowLan={tcpAllowLan}", "---");
         }
 

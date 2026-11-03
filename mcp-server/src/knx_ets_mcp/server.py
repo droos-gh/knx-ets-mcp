@@ -15,24 +15,48 @@ from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
+from knx_ets_mcp import http_auth
 from knx_ets_mcp.client import KnxBridgeClient, KnxBridgeError
 
 
 def _build_http_auth() -> Any:
-    """Optional bearer-token auth for the client-facing HTTP transport.
+    """Bearer-token auth for the client-facing HTTP transport (None for stdio).
 
-    When MCP_AUTH_TOKEN is set (and the client-facing transport is HTTP/SSE),
-    the server requires ``Authorization: Bearer <MCP_AUTH_TOKEN>`` on every
-    request. Returns None otherwise (no auth). This is independent of the ETS
-    AddIn token (KNX_BRIDGE_TOKEN); it protects the network endpoint itself.
+    Secure by default: a network bind always gets a token (explicit
+    MCP_AUTH_TOKEN, else a generated one persisted per user), unless the bind is
+    loopback-only or MCP_ALLOW_NO_AUTH=1. See ``knx_ets_mcp.http_auth``.
     """
-    token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
     transport = os.environ.get("MCP_TRANSPORT", "http").strip().lower()
-    if not token or transport == "stdio":
+    if transport == "stdio":
         return None
-    from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
-    return StaticTokenVerifier(tokens={token: {"client_id": "knx-ets", "scopes": []}})
+    host = os.environ.get("MCP_HOST", http_auth.DEFAULT_HOST)
+    return http_auth.build_verifier(http_auth.resolve_http_auth(host))
+
+
+# ---------------------------------------------------------------------------
+# Tool annotations (MCP hints so the client can tell reads from writes and
+# ask for confirmation on dangerous calls). Every tool carries exactly one.
+# ---------------------------------------------------------------------------
+
+# Reads the ETS project / catalog; no change anywhere.
+READ_ONLY = ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+# Reads from an external system (online catalog, KNX bus telegrams); no state change.
+READ_ONLY_EXTERNAL = ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+# Additive project change (create/add/link/assign/import); one ETS undo step.
+PROJECT_ADDITIVE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+# Project change that overwrites or removes data (set/rename/move/delete/unlink/
+# undo/batch); undo-reversible in ETS, but still a destructive update.
+PROJECT_DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
+# Writes to physical devices / the KNX bus (program, group write, reset, unload,
+# individual address, firmware, cancelling a running bus job). NOT undo-reversible.
+BUS_WRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
 
 
 mcp = FastMCP(
@@ -80,7 +104,10 @@ mcp = FastMCP(
         "engine; default is a PARTIAL download (only changes), pass options='all' for a "
         "full download incl. individual address. It needs a bus interface selected in ETS "
         "(else bus_unavailable), runs without a second approval, and is reversible "
-        "(re-program to correct). Firmware update is separately gated (off by default).\n"
+        "(re-program to correct). Firmware update is separately gated (off by default). "
+        "If the operator switched the AddIn to 'Bus read-only', every bus write "
+        "(program, group write, reset, unload, individual address, firmware) returns "
+        "approval_required: tell the user and do NOT retry or work around it.\n"
         "\n"
         "TECHNICAL MANUALS: these tools expose parameter labels, options and ranges, but "
         "NOT what a parameter actually does behaviorally. For anything beyond trivial "
@@ -115,7 +142,8 @@ mcp = FastMCP(
     # Mask unexpected exception details so file paths / internals don't leak.
     # ToolError messages (protocol errors) pass through unmasked.
     mask_error_details=True,
-    auth=_build_http_auth(),
+    # Auth is attached in main() for HTTP runs (importing the module must not
+    # create token files or depend on the run-time bind address).
 )
 
 # ---------------------------------------------------------------------------
@@ -142,10 +170,14 @@ async def _get_client() -> KnxBridgeClient:
             raise RuntimeError(
                 "KNX_BRIDGE_PORT is required when KNX_BRIDGE_TRANSPORT=tcp"
             )
-        # Empty token is allowed: it means the AddIn has authentication disabled
-        # (blank "Token" preference). Do not force a token here -- the AddIn
-        # decides. When auth is on, an empty/wrong token yields auth_failed.
-        token = os.environ.get("KNX_BRIDGE_TOKEN", "")
+        # The AddIn always requires its token (shown in its panel). Fail fast with
+        # a clear message instead of a later auth_failed on every call.
+        token = os.environ.get("KNX_BRIDGE_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError(
+                "KNX_BRIDGE_TOKEN is required when KNX_BRIDGE_TRANSPORT=tcp "
+                "(copy the token shown in the ETS AddIn panel)"
+            )
         transport = TcpTransport(host, int(port_str), token)
     else:
         from knx_ets_mcp.transport.pipe import NamedPipeTransport
@@ -177,7 +209,7 @@ def _bridge_call(exc: KnxBridgeError) -> None:
 # Read tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_bridge_info() -> dict[str, Any]:
     """Get bridge/AddIn status: version, SDK version, active project metadata, KNXnet/IP constraint."""
     try:
@@ -187,7 +219,7 @@ async def knx_bridge_info() -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_project_info() -> dict[str, Any]:
     """Get KNX project metadata: ID, name, group-address style, revision."""
     try:
@@ -197,7 +229,7 @@ async def knx_project_info() -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_devices(name_contains: str | None = None) -> list[dict[str, Any]]:
     """List devices in the KNX project (ref, address, name, description, comment, product,
     orderNumber, line).
@@ -226,7 +258,7 @@ async def knx_list_devices(name_contains: str | None = None) -> list[dict[str, A
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_group_addresses(name_contains: str | None = None) -> list[dict[str, Any]]:
     """List group addresses in the KNX project (ref, address, name, description, comment, DPT).
 
@@ -251,7 +283,7 @@ async def knx_list_group_addresses(name_contains: str | None = None) -> list[dic
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_comobjects(
     device_ref: str,
     name_contains: str | None = None,
@@ -306,7 +338,7 @@ async def knx_list_comobjects(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_topology() -> list[dict[str, Any]]:
     """List the KNX topology: areas, lines, and segments.
 
@@ -319,7 +351,7 @@ async def knx_topology() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_catalog_manufacturers() -> list[dict[str, Any]]:
     """List manufacturers available in the KNX product catalog."""
     try:
@@ -329,7 +361,7 @@ async def knx_catalog_manufacturers() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_catalog_search(
     query: str,
     manufacturer_ref: str | None = None,
@@ -350,7 +382,7 @@ async def knx_catalog_search(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_search_online_catalog(
     query: str,
     manufacturer_ref: str | None = None,
@@ -372,7 +404,7 @@ async def knx_search_online_catalog(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_parameters(
     device_ref: str,
     active_only: bool = True,
@@ -437,7 +469,7 @@ async def knx_list_parameters(
 # Mutation tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_group_address(
     name: str,
     address: str,
@@ -470,7 +502,7 @@ async def knx_create_group_address(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_add_device(
     line_ref: str,
     catalog_item_ref: str,
@@ -503,7 +535,7 @@ async def knx_add_device(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_link(
     com_object_ref: str,
     ga_ref: str,
@@ -537,7 +569,7 @@ async def knx_link(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_unlink(
     com_object_ref: str,
     ga_ref: str,
@@ -560,7 +592,7 @@ async def knx_unlink(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_parameter(
     device_ref: str,
     parameter_ref: str,
@@ -593,7 +625,7 @@ async def knx_set_parameter(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_import_product(
     path: str,
     expected_project_revision: str | None = None,
@@ -617,7 +649,7 @@ async def knx_import_product(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_internalize_product(
     unified_catalog_item_ref: str,
     expected_project_revision: str | None = None,
@@ -646,7 +678,7 @@ async def knx_internalize_product(
 # Phase A: Group Address editing tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_group_address(
     ga_ref: str,
     expected_project_revision: str | None = None,
@@ -666,7 +698,7 @@ async def knx_delete_group_address(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_rename_group_address(
     ga_ref: str,
     name: str,
@@ -688,7 +720,7 @@ async def knx_rename_group_address(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_group_address_description(
     ga_ref: str,
     description: str,
@@ -710,7 +742,7 @@ async def knx_set_group_address_description(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_group_address_dpt(
     ga_ref: str,
     dpt_main: int,
@@ -739,7 +771,7 @@ async def knx_set_group_address_dpt(
 # Phase A: Group Range tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_group_range(
     name: str,
     address: int,
@@ -764,7 +796,7 @@ async def knx_create_group_range(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_group_range(
     group_range_ref: str,
     expected_project_revision: str | None = None,
@@ -788,7 +820,7 @@ async def knx_delete_group_range(
 # Phase A: Device editing tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_device(
     device_ref: str,
     expected_project_revision: str | None = None,
@@ -808,7 +840,7 @@ async def knx_delete_device(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_rename_device(
     device_ref: str,
     name: str,
@@ -830,7 +862,7 @@ async def knx_rename_device(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_device_address(
     device_ref: str,
     address: str,
@@ -852,7 +884,7 @@ async def knx_set_device_address(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_move_device(
     device_ref: str,
     line_ref: str,
@@ -880,7 +912,7 @@ async def knx_move_device(
 # Phase A: Topology tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_area(
     name: str,
     address: int | None = None,
@@ -902,7 +934,7 @@ async def knx_create_area(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_area(
     area_ref: str,
     expected_project_revision: str | None = None,
@@ -922,7 +954,7 @@ async def knx_delete_area(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_line(
     area_ref: str,
     name: str,
@@ -946,7 +978,7 @@ async def knx_create_line(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_line(
     line_ref: str,
     expected_project_revision: str | None = None,
@@ -970,7 +1002,7 @@ async def knx_delete_line(
 # Phase A: ComObject flags tool
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_comobject_flags(
     com_object_ref: str,
     communication_flag: bool | None = None,
@@ -1022,7 +1054,7 @@ async def knx_set_comobject_flags(
 # Label setter tools (v0.1.16)
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_device_description(
     device_ref: str,
     description: str,
@@ -1039,7 +1071,7 @@ async def knx_set_device_description(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_device_comment(
     device_ref: str,
     comment: str,
@@ -1056,7 +1088,7 @@ async def knx_set_device_comment(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_comobject_description(
     com_object_ref: str,
     description: str,
@@ -1073,7 +1105,7 @@ async def knx_set_comobject_description(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_comobject_function_text(
     com_object_ref: str,
     function_text: str,
@@ -1094,7 +1126,7 @@ async def knx_set_comobject_function_text(
 # Programming tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=BUS_WRITE)
 async def knx_program_device(
     device_ref: str,
     options: str | None = None,
@@ -1124,7 +1156,7 @@ async def knx_program_device(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=BUS_WRITE)
 async def knx_update_firmware(
     device_ref: str,
     firmware: str,
@@ -1153,7 +1185,7 @@ async def knx_update_firmware(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_job_status(job_id: str) -> dict[str, Any]:
     """Poll the status of a running programming job.
 
@@ -1167,7 +1199,7 @@ async def knx_job_status(job_id: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=BUS_WRITE)
 async def knx_job_cancel(job_id: str) -> dict[str, Any]:
     """Cancel a running programming job.
 
@@ -1185,7 +1217,7 @@ async def knx_job_cancel(job_id: str) -> dict[str, Any]:
 # Phase B: Building structure tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_building() -> list[dict[str, Any]]:
     """List the building structure: building parts, devices, and functions as a tree."""
     try:
@@ -1195,7 +1227,7 @@ async def knx_list_building() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_building_part(
     name: str,
     type: str,
@@ -1222,7 +1254,7 @@ async def knx_create_building_part(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_building_part(
     building_part_ref: str,
     expected_project_revision: str | None = None,
@@ -1242,7 +1274,7 @@ async def knx_delete_building_part(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_rename_building_part(
     building_part_ref: str,
     name: str,
@@ -1265,7 +1297,7 @@ async def knx_rename_building_part(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_assign_device(
     building_part_ref: str,
     device_ref: str,
@@ -1288,7 +1320,7 @@ async def knx_assign_device(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_unassign_device(
     building_part_ref: str,
     device_ref: str,
@@ -1315,7 +1347,7 @@ async def knx_unassign_device(
 # Phase B: Building function tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_building_function(
     building_part_ref: str,
     name: str,
@@ -1338,7 +1370,7 @@ async def knx_create_building_function(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_building_function(
     building_function_ref: str,
     expected_project_revision: str | None = None,
@@ -1359,7 +1391,7 @@ async def knx_delete_building_function(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_link_building_function_ga(
     building_function_ref: str,
     group_address_refs: list[str],
@@ -1382,7 +1414,7 @@ async def knx_link_building_function_ga(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_unlink_building_function_ga(
     building_function_ref: str,
     group_address_refs: list[str],
@@ -1409,7 +1441,7 @@ async def knx_unlink_building_function_ga(
 # Phase C: Project management tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_project_save() -> dict[str, Any]:
     """Save the KNX project. NOT SUPPORTED: ETS auto-saves projects."""
     try:
@@ -1419,7 +1451,7 @@ async def knx_project_save() -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_project_export(
     path: str,
     include_catalog: bool = False,
@@ -1437,7 +1469,7 @@ async def knx_project_export(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_project_backup(path: str) -> dict[str, Any]:
     """Backup the KNX project database. NOT SUPPORTED in ETS 6.
 
@@ -1453,7 +1485,7 @@ async def knx_project_backup(path: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_project_undo(
     expected_project_revision: str | None = None,
 ) -> dict[str, Any]:
@@ -1471,7 +1503,7 @@ async def knx_project_undo(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_project_redo(
     expected_project_revision: str | None = None,
 ) -> dict[str, Any]:
@@ -1489,7 +1521,7 @@ async def knx_project_redo(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_project_export_semantic() -> dict[str, Any]:
     """Export semantic data (Turtle/JSON-LD). NOT SUPPORTED in v1.
 
@@ -1506,7 +1538,7 @@ async def knx_project_export_semantic() -> dict[str, Any]:
 # Phase E: Catalog browsing tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_browse_products(
     manufacturer_ref: str,
     offset: int = 0,
@@ -1526,7 +1558,7 @@ async def knx_browse_products(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_product_info(catalog_item_ref: str) -> dict[str, Any]:
     """Get detailed product information for a catalog item.
 
@@ -1544,7 +1576,7 @@ async def knx_product_info(catalog_item_ref: str) -> dict[str, Any]:
 # Phase D: Bus / Online operation tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_bus_ping(address: str) -> dict[str, Any]:
     """Ping a KNX individual address to check if a device is alive.
 
@@ -1560,7 +1592,7 @@ async def knx_bus_ping(address: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_bus_scan_line(line_ref: str) -> dict[str, Any]:
     """Scan a topology line for responding KNX devices.
 
@@ -1577,7 +1609,7 @@ async def knx_bus_scan_line(line_ref: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_reconstruct_line(line_ref: str) -> dict[str, Any]:
     """Reconstruct a topology line: scan the bus and compare/reconcile with the project.
 
@@ -1595,7 +1627,7 @@ async def knx_reconstruct_line(line_ref: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_read_group_objects(
     address: str,
     use_job: bool = False,
@@ -1608,7 +1640,7 @@ async def knx_read_group_objects(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_device_read_info(device_ref: str) -> dict[str, Any]:
     """Read the device descriptor from a physical device on the KNX bus.
 
@@ -1625,7 +1657,7 @@ async def knx_device_read_info(device_ref: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_device_compare(device_ref: str) -> dict[str, Any]:
     """Compare a subset of device properties between the project and the bus.
 
@@ -1643,7 +1675,7 @@ async def knx_device_compare(device_ref: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_group_read(ga_ref: str) -> dict[str, Any]:
     """Read a group address value from the KNX bus.
 
@@ -1660,7 +1692,7 @@ async def knx_group_read(ga_ref: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=BUS_WRITE)
 async def knx_group_write(
     ga_ref: str,
     value: str,
@@ -1687,7 +1719,7 @@ async def knx_group_write(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
 async def knx_group_monitor(
     line_ref: str = "default",
     duration_ms: int = 10000,
@@ -1710,7 +1742,7 @@ async def knx_group_monitor(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=BUS_WRITE)
 async def knx_device_unload(
     device_ref: str,
     full_unload: bool = False,
@@ -1737,7 +1769,7 @@ async def knx_device_unload(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=BUS_WRITE)
 async def knx_bus_set_individual_address(
     device_ref: str,
     current_address: str,
@@ -1754,7 +1786,7 @@ async def knx_bus_set_individual_address(
 # Reconciliation tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_device_unassign(
     device_ref: str,
     expected_project_revision: str | None = None,
@@ -1782,7 +1814,7 @@ async def knx_device_unassign(
 # Phase G: Bus writes (NOT mutating)
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=BUS_WRITE)
 async def knx_device_reset(device_ref: str) -> dict[str, Any]:
     """Send a restart command to a physical KNX device on the bus."""
     try:
@@ -1796,7 +1828,7 @@ async def knx_device_reset(device_ref: str) -> dict[str, Any]:
 # Phase G: Move tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_move_group_address(
     target_group_range_ref: str,
     group_address_ref: str,
@@ -1813,7 +1845,7 @@ async def knx_move_group_address(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_move_group_range(
     target_group_range_ref: str,
     source_group_range_ref: str,
@@ -1830,7 +1862,7 @@ async def knx_move_group_range(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_move_line(
     target_area_ref: str,
     line_ref: str,
@@ -1847,7 +1879,7 @@ async def knx_move_line(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_move_building_part(
     target_building_part_ref: str,
     source_building_part_ref: str,
@@ -1868,7 +1900,7 @@ async def knx_move_building_part(
 # Phase G: Additional address tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_add_device_additional_address(
     device_ref: str,
     address: int,
@@ -1885,7 +1917,7 @@ async def knx_add_device_additional_address(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_remove_device_additional_address(
     device_ref: str,
     address: int,
@@ -1902,7 +1934,7 @@ async def knx_remove_device_additional_address(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_add_line_additional_ga(
     line_ref: str,
     group_address_refs: list[str],
@@ -1919,7 +1951,7 @@ async def knx_add_line_additional_ga(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_remove_line_additional_ga(
     line_ref: str,
     group_address_refs: list[str],
@@ -1940,7 +1972,7 @@ async def knx_remove_line_additional_ga(
 # Phase G: Segment tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_segment(
     line_ref: str,
     name: str,
@@ -1958,7 +1990,7 @@ async def knx_create_segment(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_segment(
     segment_ref: str,
     expected_project_revision: str | None = None,
@@ -1978,7 +2010,7 @@ async def knx_delete_segment(
 # Phase G: Trade tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_trades() -> list[dict[str, Any]]:
     """List all trades (Gewerke) in the KNX project."""
     try:
@@ -1988,7 +2020,7 @@ async def knx_list_trades() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_trade(
     name: str,
     expected_project_revision: str | None = None,
@@ -2003,7 +2035,7 @@ async def knx_create_trade(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_trade(
     trade_ref: str,
     expected_project_revision: str | None = None,
@@ -2018,7 +2050,7 @@ async def knx_delete_trade(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_trade_assign_device(
     trade_ref: str,
     device_ref: str,
@@ -2035,7 +2067,7 @@ async def knx_trade_assign_device(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_trade_unassign_device(
     trade_ref: str,
     device_ref: str,
@@ -2056,7 +2088,7 @@ async def knx_trade_unassign_device(
 # Phase G: Bus interface / filter tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_bus_interface_link(
     device_ref: str,
     group_address_refs: list[str],
@@ -2073,7 +2105,7 @@ async def knx_bus_interface_link(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_bus_interface_unlink(
     device_ref: str,
     group_address_refs: list[str],
@@ -2094,7 +2126,7 @@ async def knx_bus_interface_unlink(
 # Phase G: Parameter default tool
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_set_parameter_default(
     device_ref: str,
     parameter_ref: str,
@@ -2115,7 +2147,7 @@ async def knx_set_parameter_default(
 # Phase G: KNX Secure certificate tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_certificates() -> list[dict[str, Any]]:
     """List KNX Secure device certificates in the project."""
     try:
@@ -2125,7 +2157,7 @@ async def knx_list_certificates() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_add_certificate(
     value: str,
     expected_project_revision: str | None = None,
@@ -2140,7 +2172,7 @@ async def knx_add_certificate(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_certificate(
     certificate_ref: str,
     expected_project_revision: str | None = None,
@@ -2159,7 +2191,7 @@ async def knx_delete_certificate(
 # Phase G: Navigation tool
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_navigate_to(ref: str) -> dict[str, Any]:
     """Navigate the ETS UI to a specific object (device, GA, line, building part, etc.)."""
     try:
@@ -2173,7 +2205,7 @@ async def knx_navigate_to(ref: str) -> dict[str, Any]:
 # Phase G: Tag tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_tags() -> list[dict[str, Any]]:
     """List all tags defined in the KNX project."""
     try:
@@ -2183,7 +2215,7 @@ async def knx_list_tags() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_tag(
     label: str,
     color: str | None = None,
@@ -2200,7 +2232,7 @@ async def knx_create_tag(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_tag(
     tag_ref: str,
     expected_project_revision: str | None = None,
@@ -2219,7 +2251,7 @@ async def knx_delete_tag(
 # Phase G: ToDo tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_todos() -> list[dict[str, Any]]:
     """List all to-do items in the KNX project."""
     try:
@@ -2229,7 +2261,7 @@ async def knx_list_todos() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_create_todo(
     description: str,
     object_path: str | None = None,
@@ -2247,7 +2279,7 @@ async def knx_create_todo(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_todo(
     todo_ref: str,
     expected_project_revision: str | None = None,
@@ -2266,7 +2298,7 @@ async def knx_delete_todo(
 # Phase G: Channel / module tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_device_channels(device_ref: str) -> dict[str, Any]:
     """List channels and modules for a device."""
     try:
@@ -2276,7 +2308,7 @@ async def knx_device_channels(device_ref: str) -> dict[str, Any]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_application_dynamic(device_ref: str) -> dict[str, Any]:
     """Get the device application program's DYNAMIC UI tree as XML: {xml}.
 
@@ -2303,7 +2335,7 @@ async def knx_application_dynamic(device_ref: str) -> dict[str, Any]:
 # Phase G: Project history tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
 async def knx_list_project_history() -> list[dict[str, Any]]:
     """List project history entries (audit log)."""
     try:
@@ -2313,7 +2345,7 @@ async def knx_list_project_history() -> list[dict[str, Any]]:
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_ADDITIVE)
 async def knx_add_project_history(
     text: str,
     expected_project_revision: str | None = None,
@@ -2328,7 +2360,7 @@ async def knx_add_project_history(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_delete_project_history(
     history_ref: str,
     expected_project_revision: str | None = None,
@@ -2343,7 +2375,7 @@ async def knx_delete_project_history(
         _bridge_call(exc)
 
 
-@mcp.tool
+@mcp.tool(annotations=PROJECT_DESTRUCTIVE)
 async def knx_batch_apply(
     operations: list[dict[str, Any]],
     atomic: bool = True,
@@ -2405,7 +2437,10 @@ def main() -> None:
       - "http" / "streamable-http" (DEFAULT): a visible Streamable HTTP server the
         client connects to by URL. Host/port/path come from MCP_HOST
         (default 0.0.0.0 = reachable on the LAN), MCP_PORT (default 8765),
-        MCP_PATH (default /mcp). Set MCP_AUTH_TOKEN to require a bearer token.
+        MCP_PATH (default /mcp). A network bind always requires a bearer token:
+        MCP_AUTH_TOKEN, else one generated once and persisted per user (printed at
+        startup). MCP_ALLOW_NO_AUTH=1 opts out (trusted LAN only); a loopback
+        bind (MCP_HOST=127.0.0.1) needs no token.
       - "stdio": the AI client spawns the server and talks over stdio (use this
         when the client launches the exe itself; no network endpoint).
     """
@@ -2414,20 +2449,32 @@ def main() -> None:
         mcp.run()
         return
 
-    host = os.environ.get("MCP_HOST", "0.0.0.0")
+    host = os.environ.get("MCP_HOST", http_auth.DEFAULT_HOST)
     port = int(os.environ.get("MCP_PORT", "8765"))
     path = os.environ.get("MCP_PATH", "/mcp")
-    auth_on = bool(os.environ.get("MCP_AUTH_TOKEN", "").strip())
+    settings = http_auth.resolve_http_auth(host)
+    mcp.auth = http_auth.build_verifier(settings)
     print(
         f"[knx-ets-mcp] Streamable HTTP on http://{host}:{port}{path} "
-        f"(auth: {'on' if auth_on else 'OFF'})",
+        f"(auth: {'on' if settings.enabled else 'OFF'} -- {settings.source})",
         file=sys.stderr,
     )
-    if host not in ("127.0.0.1", "localhost", "::1") and not auth_on:
+    if settings.enabled and not os.environ.get("MCP_AUTH_TOKEN", "").strip():
+        # Generated/persisted token: show it so the user can configure the client.
+        url_host = "<this-machine-ip>" if host == http_auth.DEFAULT_HOST else host
         print(
-            "[knx-ets-mcp] WARNING: bound to a network interface without "
-            "MCP_AUTH_TOKEN -- anyone who can reach this port can control ETS. "
-            "Set MCP_AUTH_TOKEN, or bind MCP_HOST=127.0.0.1, on untrusted networks.",
+            f"[knx-ets-mcp] Bearer token: {settings.token}\n"
+            f"[knx-ets-mcp] Connect with:\n"
+            f"  claude mcp add --scope user --transport http knx-ets "
+            f"http://{url_host}:{port}{path} \\\n"
+            f'    --header "Authorization: Bearer {settings.token}"',
+            file=sys.stderr,
+        )
+    if not settings.enabled and not http_auth.is_loopback(host):
+        print(
+            "[knx-ets-mcp] WARNING: MCP_ALLOW_NO_AUTH is set and the server is bound "
+            "to a network interface -- anyone who can reach this port can control "
+            "ETS and program devices. Use only on a trusted, isolated LAN.",
             file=sys.stderr,
         )
     tr = "http" if transport in ("http", "streamable-http") else transport

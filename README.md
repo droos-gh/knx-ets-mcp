@@ -139,40 +139,44 @@ the option that matches where things run.
 
 On the ETS machine, just double-click **`Start-MCP-Server.exe`** from the extracted
 folder. **By default it serves Streamable HTTP on `0.0.0.0:8765/mcp`** (reachable on your
-LAN) and talks to the AddIn over the local named pipe — no ETS TCP endpoint, no env vars
-to set. (The examples below call it by its internal name `knx-ets-mcp.exe`; for advanced
-options run it from a terminal.)
+LAN), **protected by a bearer token**, and talks to the AddIn over the local named pipe —
+no ETS TCP endpoint, no env vars to set. (The examples below call it by its internal name
+`knx-ets-mcp.exe`; for advanced options run it from a terminal.)
+
+On first start the server generates a random token, stores it for your Windows user
+(`%LOCALAPPDATA%\knx-ets-mcp\http-token`, reused on every later start) and prints it
+together with the ready-to-paste `claude mcp add` command:
 
 ```bat
 :: Windows, on the ETS machine
 knx-ets-mcp.exe
-:: -> [knx-ets-mcp] Streamable HTTP on http://0.0.0.0:8765/mcp (auth: OFF)
+:: -> [knx-ets-mcp] Streamable HTTP on http://0.0.0.0:8765/mcp (auth: on -- C:\Users\you\AppData\Local\knx-ets-mcp\http-token)
+:: -> [knx-ets-mcp] Bearer token: <generated-token>
 ```
 
 Change the bind with `MCP_HOST` / `MCP_PORT` / `MCP_PATH` if needed; `KNX_BRIDGE_TRANSPORT`
 defaults to the local pipe, so you don't set it.
 
-**Protect it with a token (recommended on a shared LAN).** Set `MCP_AUTH_TOKEN`; the
-endpoint then requires `Authorization: Bearer <token>`:
+**Choose your own token** instead by setting `MCP_AUTH_TOKEN` (or point
+`MCP_AUTH_TOKEN_FILE` at another file). Either way the endpoint requires
+`Authorization: Bearer <token>`:
 
 ```bat
 set "MCP_AUTH_TOKEN=choose-a-long-random-secret"
 knx-ets-mcp.exe
-:: -> [knx-ets-mcp] Streamable HTTP on http://0.0.0.0:8765/mcp (auth: on)
+:: -> [knx-ets-mcp] Streamable HTTP on http://0.0.0.0:8765/mcp (auth: on -- MCP_AUTH_TOKEN)
 ```
 
 Then, from your Mac (or any LAN machine), point Claude Code at the server's URL (use the
-Windows machine's IP):
+Windows machine's IP) with the token:
 
 ```bash
-claude mcp add --scope user --transport http knx-ets http://<windows-ip>:8765/mcp
-# if you set a token, add the header:
 claude mcp add --scope user --transport http knx-ets http://<windows-ip>:8765/mcp \
-  --header "Authorization: Bearer choose-a-long-random-secret"
+  --header "Authorization: Bearer <token>"
 ```
 
-…or a portable project `.mcp.json` (this repo ships the no-token form — change the host to
-your Windows IP; add the `headers` block if you set a token):
+…or a portable project `.mcp.json` (change the host to your Windows IP and paste the
+token; this repo's own `.mcp.json` targets a loopback server, which needs no token):
 
 ```json
 {
@@ -186,9 +190,11 @@ your Windows IP; add the `headers` block if you set a token):
 }
 ```
 
-Security: without `MCP_AUTH_TOKEN` the endpoint has **no authentication**, and there is
-**no TLS** either way — anyone who can reach the port can control ETS. Use a token, and
-keep it on a trusted LAN.
+Security: a network bind always requires the token. Only a **loopback** bind
+(`MCP_HOST=127.0.0.1`, same machine only) runs without one. `MCP_ALLOW_NO_AUTH=1` turns
+authentication off on a network bind — then anyone who can reach the port can control ETS
+and program devices; use it only on an isolated, trusted LAN. There is **no TLS** either
+way, so keep the server on a trusted network.
 
 #### B. Everything on one machine (local only)
 
@@ -217,8 +223,9 @@ claude mcp add --scope user --transport stdio knx-ets \
 To run the MCP server on another machine (e.g. on the Mac, ETS in a VM), the server reaches
 ETS over the **ETS TCP endpoint** instead of the pipe. Enable it in the AddIn's
 **Configuration / Preferences**: **Enable TCP endpoint**, **Port** (default `8730`),
-**Allow LAN**; the panel shows the endpoint and a **token** (leave it empty to disable auth
-— trusted LAN only). Then run the server from this repo pointing at it (if you don't have
+**Allow LAN**; the panel shows the endpoint and the **token** (authentication is always on:
+leave the field empty and a random token is generated; confirm the dialog, or type your
+own, to keep the same token across ETS restarts). Then run the server from this repo pointing at it (if you don't have
 the repo on that machine, install the release wheel once with
 `uv tool install ./knx_ets_mcp-<version>-py3-none-any.whl` and run `knx-ets-mcp` instead):
 
@@ -227,12 +234,12 @@ MCP_TRANSPORT=http \
 KNX_BRIDGE_TRANSPORT=tcp \
 KNX_BRIDGE_HOST=<ets-ip> \
 KNX_BRIDGE_PORT=8730 \
-KNX_BRIDGE_TOKEN=<token-or-unset> \
+KNX_BRIDGE_TOKEN=<token-from-the-panel> \
 uv run --directory /path/to/knx_addin/mcp-server knx-ets-mcp
 ```
 
-Leave `KNX_BRIDGE_TOKEN` empty/unset if you disabled auth in the AddIn; set it to the
-panel's token when auth is on. Neither the ETS TCP link nor the HTTP endpoint is
+Set `KNX_BRIDGE_TOKEN` to the token shown in the AddIn panel (a missing or wrong token is
+rejected with `auth_failed`). Neither the ETS TCP link nor the HTTP endpoint is
 encrypted — trusted LAN only.
 
 Restart (or reconnect) the AI client so it picks up the server.
@@ -265,6 +272,16 @@ ETS apply to **IoT devices only**. They are gated by a preference:
 - To allow it, enable **Unattended firmware update** in the AddIn's Configuration /
   Preferences — a standing authorization you set once by hand. Only enable it if you
   accept that firmware may be flashed without a further prompt.
+
+**Bus read-only mode.** To let the assistant work on the project and *read* the bus
+(scan, ping, group read, monitor) while making sure it cannot touch the installation,
+enable **Bus read-only** in the AddIn's Configuration / Preferences (ETS 6) or panel
+(ETS 5). Every bus write — programming, group writes, device reset/unload, individual
+address, firmware — then returns `approval_required`. It is off by default.
+
+Each tool also carries standard MCP safety annotations (`readOnlyHint`,
+`destructiveHint`, `openWorldHint`), so clients that ask for confirmation on destructive
+tools will prompt before programming, group writes, resets or deletions.
 
 ## Status
 

@@ -175,8 +175,14 @@ thread and an undo marker (see Hard constraints).
   step / no programming-button press); pass `"all"` for a full download incl. individual
   address. Live-verified on ETS5: a partial download of a changed parameter succeeded
   (0->100%). Needs a bus interface selected in ETS, else `bus_unavailable`.
-  Only `firmware.update` is gated, and only via the "Unattended firmware update"
-  preference in the AddIn settings (no per-device token). Bus access is serialized
+  `firmware.update` is additionally gated via the "Unattended firmware update"
+  preference in the AddIn settings (no per-device token). An opt-in **"Bus read-only"**
+  preference (default off) refuses every bus write (`device.program`, `firmware.update`,
+  `group.write`, `device.unload`, `device.reset`, `bus.setIndividualAddress`) with
+  `approval_required`; the decision lives in the pure `Host/BusWritePolicy.cs`, mirrored by
+  the mock. Every MCP tool carries `ToolAnnotations` (READ_ONLY / READ_ONLY_EXTERNAL /
+  PROJECT_ADDITIVE / PROJECT_DESTRUCTIVE / BUS_WRITE in `server.py`); a test enforces that
+  each tool has one. Bus access is serialized
   independently.
 - **Setting parameters** can (de)activate ComObjects and change the memory layout.
   Order: set parameters, re-read active ComObjects, then resolve connectors. Set
@@ -405,8 +411,17 @@ so empty is not authoritative.
 - Address parsing tolerates commas and surrounding whitespace (e.g. `"1,1,5"` accepted
   as `"1.1.5"`).
 - **Secure caveat:** `group.monitor` cannot see Secure telegrams on some ETS versions.
-- **Auth:** TCP token is optional; empty token in the AddIn = no authentication
-  (red warning in the panel), only for trusted LAN.
+- **Auth (AddIn IPC):** always on. An empty "Token" preference = the AddIn generates a
+  random 256-bit token at bridge start (`Host/BridgeToken.cs`) and keeps it in the
+  in-memory configuration (persisted once the Configuration dialog is confirmed); the pipe
+  client reads it from `session.json`, a TCP client copies it from the panel. Constant-time
+  comparison. There is no unauthenticated mode any more.
+- **Auth (MCP HTTP endpoint):** secure by default (`mcp-server/src/knx_ets_mcp/http_auth.py`).
+  A network bind always requires a bearer token: `MCP_AUTH_TOKEN`, else one generated once
+  and persisted per user (`MCP_AUTH_TOKEN_FILE`, default `%LOCALAPPDATA%\knx-ets-mcp\http-token`),
+  printed at startup. Loopback binds need none (FastMCP host/origin protection covers DNS
+  rebinding); `MCP_ALLOW_NO_AUTH=1` is the explicit opt-out. Auth is attached in `main()`,
+  not at import.
 
 ### Deliberately NOT exposed
 

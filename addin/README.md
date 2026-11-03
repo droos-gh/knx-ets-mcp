@@ -135,9 +135,9 @@ test suite passes.
 | `todo.create/delete`       | MUTATING | Project to-do items                                                            |
 | `projectHistory.add/delete`| MUTATING | Audit trail entries                                                            |
 | `project.navigateTo`       | COMMAND  | Selects object in ETS UI                                                       |
-| `device.program`           | BUS      | Runs automatically via `Root.StartDownload`                                    |
+| `device.program`           | BUS      | Runs automatically via `Root.StartDownload` (blocked by "Bus read-only")       |
 | `device.unload`            | BUS      | Unload application program                                                     |
-| `firmware.update`          | BUS      | Gated: requires "Unattended firmware update" preference                        |
+| `firmware.update`          | BUS      | Gated: requires "Unattended firmware update" (and "Bus read-only" off)         |
 | `bus.setIndividualAddress`  | BUS      | Programs project address onto bus (job-based)                                  |
 | `device.reset`             | BUS      | Root.ResetDevice                                                               |
 | `job.status/cancel`        | INFRA    | Async job tracking and cancellation                                            |

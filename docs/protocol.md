@@ -14,8 +14,10 @@ only by mutual agreement.
   transport behind an interface and uses a mock/TCP loopback. Named Pipe is the
   production path.
 - Message framing: **one JSON message per line** (newline-delimited JSON, UTF-8).
-- Every message carries `token` (from session.json); the AddIn discards messages with
-  an invalid token.
+- Every message carries `token` (from session.json); the AddIn rejects messages with a
+  missing token (`invalid_params`) or a wrong one (`auth_failed`). Authentication is
+  **always on**: an empty "Token" preference makes the AddIn generate a random 256-bit
+  token at bridge start. The comparison is constant-time.
 - **Optional TCP endpoint (cross-machine, opt-in):** Can be enabled in the app
   preferences (`TcpEnabled`, `TcpPort`, `TcpAllowLan`). Same line-JSON frames and same
   `token` as the pipe. The token is displayed in the AddIn panel and must be configured
@@ -65,7 +67,14 @@ only by mutual agreement.
 
 Error codes (initial set): `revision_mismatch`, `not_found`, `invalid_params`,
 `inactive_object`, `not_supported`, `secure_constraint`, `bus_unavailable`, `busy`,
-`approval_required`, `not_implemented`, `internal`.
+`approval_required`, `auth_failed`, `not_implemented`, `internal`.
+
+**Bus read-only preference.** When the operator enables "Bus read-only" in the AddIn,
+every bus write -- `device.program`, `firmware.update`, `group.write`, `device.unload`,
+`device.reset`, `bus.setIndividualAddress` -- returns `approval_required` (checked after
+the idempotency replay, before the revision check). Bus reads (`bus.ping`,
+`bus.scanLine`, `bus.reconstructLine`, `device.readInfo`, `device.readGroupObjects`,
+`group.read`, `group.monitor`) and `job.cancel` stay allowed. Default: off.
 
 ## Methods (v0)
 
@@ -425,7 +434,7 @@ Long-running operations run asynchronously via the job model.
     start a second job but returns the existing `jobId`.
   - **No approval token.** Application/parameter/GA-table download is reversible
     (simply re-program the corrected state), destroys nothing, and therefore runs
-    automatically.
+    automatically -- unless the operator enabled "Bus read-only" (`approval_required`).
   - `options` (optional, string): `"partial"` (**default** -- writes only the changes,
     no individual-address step / no programming-button press), `"all"` (full incl.
     individual address), `"application"`, `"network"`, `"networkBySerial"`. Maps to ETS

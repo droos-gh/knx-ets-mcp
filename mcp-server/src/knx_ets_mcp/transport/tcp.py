@@ -37,10 +37,9 @@ class TcpTransport(Transport):
         connect_timeout: float = _CONNECT_TIMEOUT,
         read_timeout: float = _READ_TIMEOUT,
     ) -> None:
-        # An empty token is allowed and means the AddIn has authentication
-        # disabled (its "Token" preference is blank). The token is still sent in
-        # each request; the AddIn ignores it when auth is off, and rejects an
-        # empty/wrong token with auth_failed when auth is on.
+        # The token is sent in each request; the AddIn always requires it and
+        # rejects an empty/wrong token with auth_failed (the server's
+        # _get_client refuses to start the TCP link without one).
         if not (1 <= port <= 65535):
             raise ValueError(f"Invalid port number: {port}")
         self._host = host

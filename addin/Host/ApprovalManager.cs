@@ -3,11 +3,11 @@ using System;
 namespace Knx.EtsBridge.Addin
 {
     /// <summary>
-    /// Gates safety-critical operations (e.g. firmware.update) based on the
-    /// persistent "Unattended firmware update" preference set in the AddIn
-    /// Configuration dialog.
+    /// Holds the operator preferences that gate bus-writing operations, as set in
+    /// the AddIn Configuration dialog (ETS6) or panel (ETS5). The decision itself
+    /// lives in <see cref="BusWritePolicy"/>.
     ///
-    /// Thread-safe: the backing field uses volatile.
+    /// Thread-safe: the backing fields use volatile.
     /// </summary>
     internal sealed class ApprovalManager
     {
@@ -22,6 +22,18 @@ namespace Knx.EtsBridge.Addin
         {
             get => _unattended;
             set => _unattended = value;
+        }
+
+        /// <summary>
+        /// When true, every bus write (program, group.write, reset, unload, individual
+        /// address, firmware) returns approval_required; bus reads stay allowed.
+        /// Set via the "Bus read-only" checkbox. Default: false (bus writes allowed).
+        /// </summary>
+        private volatile bool _busReadOnly;
+        public bool BusReadOnly
+        {
+            get => _busReadOnly;
+            set => _busReadOnly = value;
         }
     }
 }

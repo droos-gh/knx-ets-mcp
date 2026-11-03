@@ -41,11 +41,21 @@ namespace Knx.EtsBridge.Addin
         public bool TcpAllowLan { get; set; }
 
         /// <summary>
-        /// Optional fixed auth token for the endpoint. When empty, a random token is
-        /// generated per session (shown in the panel). Set a fixed value for a stable
-        /// token that survives restarts -- convenient for the remote MCP config.
+        /// Auth token for the endpoint (pipe + TCP). Authentication is always on:
+        /// when empty, a random token is generated at bridge start (shown in the panel)
+        /// and kept for the running ETS session. Confirm the Configuration dialog (or set
+        /// a fixed value) for a stable token that survives restarts -- convenient for the
+        /// remote MCP config.
         /// </summary>
         public string Token { get; set; } = "";
+
+        /// <summary>
+        /// When true, every operation that writes to the KNX bus (device.program,
+        /// group.write, device.reset, device.unload, bus.setIndividualAddress,
+        /// firmware.update) is refused with approval_required; bus reads stay allowed.
+        /// Default: false (bus writes allowed, programming runs automatically).
+        /// </summary>
+        public bool BusReadOnly { get; set; }
 
         /// <summary>
         /// Deserialize a <see cref="UserConfiguration"/> from the XML document
