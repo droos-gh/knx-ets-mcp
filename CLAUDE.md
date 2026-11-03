@@ -175,8 +175,16 @@ thread and an undo marker (see Hard constraints).
   step / no programming-button press); pass `"all"` for a full download incl. individual
   address. Live-verified on ETS5: a partial download of a changed parameter succeeded
   (0->100%). Needs a bus interface selected in ETS, else `bus_unavailable`.
-  Only `firmware.update` is gated, and only via the "Unattended firmware update"
-  preference in the AddIn settings (no per-device token). Bus access is serialized
+  `firmware.update` is additionally gated via the "Unattended firmware update"
+  preference in the AddIn settings (no per-device token). An opt-in **"Bus read-only"**
+  preference (default off) refuses every bus write (`device.program`, `firmware.update`,
+  `group.write`, `device.unload`, `device.reset`, `bus.setIndividualAddress`) with
+  `approval_required`; the decision lives in the pure `Host/BusWritePolicy.cs`, mirrored by
+  the mock, and unit-tested with xUnit in `addin-tests/` (together with `Host/BridgeToken.cs`;
+  the test project compiles these pure files directly, so it runs without the ETS SDK, on
+  net48 + net10.0 -- `dotnet test addin-tests`). Every MCP tool carries `ToolAnnotations` (READ_ONLY / READ_ONLY_EXTERNAL /
+  PROJECT_ADDITIVE / PROJECT_DESTRUCTIVE / BUS_WRITE in `server.py`); a test enforces that
+  each tool has one. Bus access is serialized
   independently.
 - **Setting parameters** can (de)activate ComObjects and change the memory layout.
   Order: set parameters, re-read active ComObjects, then resolve connectors. Set
@@ -204,19 +212,12 @@ thread and an undo marker (see Hard constraints).
 
 ## Build and runtime environment
 
-- **Build: macOS.** `dotnet build` (dotnet 10 present) with
-  `Microsoft.NETFramework.ReferenceAssemblies` cross-compiles net48 without Mono.
-  SDK DLLs via `HintPath`, `Private=false`. Clean without WPF; buildable with WPF but
-  officially "fragile".
-- **Run: Windows only.** Mac is Apple Silicon (M5 Pro, arm64) -> ETS6 under
-  **Parallels Desktop (latest version) + Windows 11 ARM** (x64 emulation),
-  MyKNX online license. UTM possible (USB passthrough fragile), VMware Fusion has
-  documented ETS6 licensing issues.
+- **Windows.** Build, run and test on Windows: `dotnet build` with
+  `Microsoft.NETFramework.ReferenceAssemblies` targets net48. SDK DLLs via `HintPath`,
+  `Private=false`.
 - **Sideload:** copy DLL + `AddInManifest.xml` to
   `C:\ProgramData\KNX\ETS6\Apps\AddIns\<AppId>\`. No KNX approval needed for local
-  use. Via Shared Folder Mac->VM.
-- **Division of labor:** Claude builds/tests the macOS side (AddIn build, MCP server,
-  SDK analysis). ETS runtime tests manually in the Windows VM.
+  use.
 
 ## Distribution & signature
 
@@ -405,8 +406,17 @@ so empty is not authoritative.
 - Address parsing tolerates commas and surrounding whitespace (e.g. `"1,1,5"` accepted
   as `"1.1.5"`).
 - **Secure caveat:** `group.monitor` cannot see Secure telegrams on some ETS versions.
-- **Auth:** TCP token is optional; empty token in the AddIn = no authentication
-  (red warning in the panel), only for trusted LAN.
+- **Auth (AddIn IPC):** always on. An empty "Token" preference = the AddIn generates a
+  random 256-bit token at bridge start (`Host/BridgeToken.cs`) and keeps it in the
+  in-memory configuration (persisted once the Configuration dialog is confirmed); the pipe
+  client reads it from `session.json`, a TCP client copies it from the panel. Constant-time
+  comparison. There is no unauthenticated mode any more.
+- **Auth (MCP HTTP endpoint):** secure by default (`mcp-server/src/knx_ets_mcp/http_auth.py`).
+  A network bind always requires a bearer token: `MCP_AUTH_TOKEN`, else one generated once
+  and persisted per user (`MCP_AUTH_TOKEN_FILE`, default `%LOCALAPPDATA%\knx-ets-mcp\http-token`),
+  printed at startup. Loopback binds need none (FastMCP host/origin protection covers DNS
+  rebinding); `MCP_ALLOW_NO_AUTH=1` is the explicit opt-out. Auth is attached in `main()`,
+  not at import.
 
 ### Deliberately NOT exposed
 
@@ -477,8 +487,7 @@ manual-vs-LLM edits, Windows Named Pipe ACLs, and crash recovery.
 
 ## Tooling notes
 
-- `dotnet` 10 under `/opt/homebrew/bin`. Decompiler not needed so far: the SDK XML
-  documentation provides the public API. If needed: `dotnet tool install -g ilspycmd`.
+- Decompiler not needed so far: the SDK XML documentation provides the public API. If needed: `dotnet tool install -g ilspycmd`.
 - CHM API documentation (`ETS6 SDK.chm`) ships with the ETS6 SDK download.
 
 ## Working rules (project-specific)

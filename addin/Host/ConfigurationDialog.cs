@@ -14,12 +14,13 @@ namespace Knx.EtsBridge.Addin
     internal sealed class ConfigurationDialog : UserControl, IModalDialog
     {
         private readonly CheckBox _unattendedCheckBox;
+        private readonly CheckBox _busReadOnlyCheckBox;
         private readonly CheckBox _tcpEnabledCheckBox;
         private readonly TextBox _tcpPortTextBox;
         private readonly CheckBox _tcpAllowLanCheckBox;
         private readonly TextBox _tokenTextBox;
 
-        public ConfigurationDialog(bool unattendedFirmwareUpdate,
+        public ConfigurationDialog(bool unattendedFirmwareUpdate, bool busReadOnly,
                                    bool tcpEnabled, int tcpPort, bool tcpAllowLan,
                                    string token)
         {
@@ -29,7 +30,7 @@ namespace Knx.EtsBridge.Addin
 
             var grid = new Grid();
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 0: title
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 1: unattended
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 1: bus safety
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2: TCP section
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 3: buttons
 
@@ -44,16 +45,31 @@ namespace Knx.EtsBridge.Addin
             Grid.SetRow(title, 0);
             grid.Children.Add(title);
 
-            // Unattended firmware update checkbox
+            // --- Bus safety section ---
+            var busPanel = new StackPanel { Margin = new Thickness(10, 10, 10, 10) };
+
+            _busReadOnlyCheckBox = new CheckBox
+            {
+                Content = "Bus read-only (block programming, group writes, resets)",
+                IsChecked = busReadOnly,
+                Margin = new Thickness(0, 0, 0, 6),
+                ToolTip = "When checked, the assistant can still read the bus (scan, ping, group read,\n"
+                        + "monitor) but every bus write -- device.program, group.write, device.reset,\n"
+                        + "device.unload, bus.setIndividualAddress, firmware.update -- is refused."
+            };
+            busPanel.Children.Add(_busReadOnlyCheckBox);
+
             _unattendedCheckBox = new CheckBox
             {
                 Content = "Unattended firmware update",
                 IsChecked = unattendedFirmwareUpdate,
-                Margin = new Thickness(10, 10, 10, 10),
-                ToolTip = "Wenn aktiv, entfaellt die Token-Pflicht fuer firmware.update"
+                ToolTip = "When checked, firmware.update runs without a further prompt\n"
+                        + "(unless 'Bus read-only' is checked)."
             };
-            Grid.SetRow(_unattendedCheckBox, 1);
-            grid.Children.Add(_unattendedCheckBox);
+            busPanel.Children.Add(_unattendedCheckBox);
+
+            Grid.SetRow(busPanel, 1);
+            grid.Children.Add(busPanel);
 
             // --- TCP endpoint section ---
             var tcpPanel = new StackPanel { Margin = new Thickness(10, 0, 10, 10) };
@@ -95,7 +111,7 @@ namespace Knx.EtsBridge.Addin
             };
             tcpPanel.Children.Add(_tcpAllowLanCheckBox);
 
-            // Token row (optional; empty = auto-generated random token per session).
+            // Token row (empty = auto-generated random token; auth is always on).
             var tokenRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(20, 0, 0, 6) };
             tokenRow.Children.Add(new TextBlock
             {
@@ -109,8 +125,8 @@ namespace Knx.EtsBridge.Addin
                 Width = 230,
                 FontFamily = new System.Windows.Media.FontFamily("Consolas, Courier New, monospace"),
                 VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = "Auth token for the endpoint. Leave empty to DISABLE authentication\n"
-                        + "(anyone on the network can control ETS without a token)."
+                ToolTip = "Auth token for the endpoint (always required).\n"
+                        + "Leave empty to generate a new random token."
             };
             tokenRow.Children.Add(_tokenTextBox);
             tcpPanel.Children.Add(tokenRow);
@@ -186,6 +202,8 @@ namespace Knx.EtsBridge.Addin
         /// <summary>The checkbox value after the dialog closes.</summary>
         public bool UnattendedFirmwareUpdate => _unattendedCheckBox.IsChecked == true;
 
+        public bool BusReadOnly => _busReadOnlyCheckBox.IsChecked == true;
+
         public bool TcpEnabled => _tcpEnabledCheckBox.IsChecked == true;
 
         /// <summary>
@@ -204,7 +222,7 @@ namespace Knx.EtsBridge.Addin
 
         public bool TcpAllowLan => _tcpAllowLanCheckBox.IsChecked == true;
 
-        /// <summary>Optional fixed token; empty means auto-generate.</summary>
+        /// <summary>Token; empty means "generate a new random token".</summary>
         public string Token => _tokenTextBox.Text?.Trim() ?? "";
 
         // --- IModalDialog implementation ---

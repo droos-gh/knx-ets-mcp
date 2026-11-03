@@ -20,7 +20,8 @@ namespace Knx.EtsBridge.Addin
     /// Named-pipe JSON-RPC server implementing the IPC contract from protocol.md.
     /// - One connection at a time (single MCP server client).
     /// - Newline-delimited JSON (UTF-8, no BOM -- #2).
-    /// - Token-based auth from session.json.
+    /// - Token-based auth, always on: the token is published in session.json (pipe
+    ///   client) and shown in the panel (TCP client). Compared in constant time.
     /// - idempotencyKey caching with (projectId, key) scope and TTL (#5).
     /// - expectedProjectRevision check inside the UI-thread dispatch (#19).
     ///
@@ -178,17 +179,18 @@ namespace Knx.EtsBridge.Addin
         private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
 
         public IpcServer(IEtsProjectGateway gateway, EtsDispatcher dispatcher,
-                         ApprovalManager approvalManager,
-                         bool tcpEnabled = false, int tcpPort = 8730, bool tcpAllowLan = false,
-                         string? token = null)
+                         ApprovalManager approvalManager, string token,
+                         bool tcpEnabled = false, int tcpPort = 8730, bool tcpAllowLan = false)
         {
             _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _approvalManager = approvalManager ?? throw new ArgumentNullException(nameof(approvalManager));
             _pipeName = "knx-ets-bridge-" + Guid.NewGuid().ToString("N").Substring(0, 12);
-            // Empty/whitespace token = NO authentication (anyone on the network can control ETS).
-            // Non-empty token = require matching token in every request.
-            _token = token ?? "";
+            // There is no unauthenticated mode: every request must carry this token.
+            // The caller resolves an empty preference to a random token (BridgeToken.Resolve).
+            if (string.IsNullOrWhiteSpace(token))
+                throw new ArgumentException("A non-empty session token is required.", nameof(token));
+            _token = token;
             _tcpEnabled = tcpEnabled;
             _tcpPort = (tcpPort >= 1 && tcpPort <= 65535) ? tcpPort : 8730;
             _tcpAllowLan = tcpAllowLan;
@@ -199,9 +201,6 @@ namespace Knx.EtsBridge.Addin
         public bool TcpEnabled => _tcpEnabled;
         public int TcpPort => _tcpPort;
         public bool TcpAllowLan => _tcpAllowLan;
-
-        /// <summary>True when a non-empty token is configured; false = auth disabled.</summary>
-        public bool AuthRequired => !string.IsNullOrEmpty(_token);
 
         /// <summary>True while the TCP listener is actually bound and accepting.</summary>
         public bool IsTcpListening => _tcpListening;
@@ -424,8 +423,8 @@ namespace Knx.EtsBridge.Addin
                 var json = JsonConvert.SerializeObject(new
                 {
                     pipeName = _pipeName,
-                    token = AuthRequired ? _token : (string?)null,
-                    authRequired = AuthRequired,
+                    token = _token,
+                    authRequired = true,
                     pid = System.Diagnostics.Process.GetCurrentProcess().Id,
                     startedAt = DateTime.UtcNow.ToString("o")
                 }, JsonSettings);
@@ -836,17 +835,15 @@ namespace Knx.EtsBridge.Addin
                     return ErrorResponse(id, ErrorCodes.InvalidParams, "Missing 'method' field.");
                 var method = (string?)methodTok ?? "";
 
-                // Token validation: only when auth is enabled (non-empty _token).
-                if (AuthRequired)
+                // Token validation: always required, compared in constant time.
                 {
                     JToken? tokenTok;
                     if (!root.TryGetValue("token", out tokenTok))
                         return ErrorResponse(id, ErrorCodes.InvalidParams, "Missing 'token' field.");
-                    var token = (string?)tokenTok;
-                    if (token != _token)
+                    var token = tokenTok.Type == JTokenType.String ? (string?)tokenTok : null;
+                    if (!BridgeToken.FixedTimeEquals(_token, token))
                         return ErrorResponse(id, "auth_failed", "Invalid session token.");
                 }
-                // When auth is disabled, accept requests with or without a token field.
 
                 // #19: Capture expectedProjectRevision; the actual check is
                 // deferred to inside the UI-thread dispatch (GuardMutation).
@@ -892,16 +889,12 @@ namespace Knx.EtsBridge.Addin
                             _idempotencyCache.TryRemove(cacheKey, out _);
                         }
 
-                        // firmware.update approval gate.
-                        if (method == "firmware.update")
-                        {
-                            if (!_approvalManager.Unattended)
-                            {
-                                return ErrorResponse(id, ErrorCodes.ApprovalRequired,
-                                    "firmware.update requires the 'Unattended firmware update' "
-                                  + "preference to be enabled in the AddIn Configuration dialog.");
-                            }
-                        }
+                        // Bus-write gate: "Bus read-only" preference blocks every bus
+                        // write; firmware.update additionally needs "Unattended".
+                        var busDecision = BusWritePolicy.Evaluate(
+                            method, _approvalManager.BusReadOnly, _approvalManager.Unattended);
+                        if (!busDecision.IsAllowed)
+                            return ErrorResponse(id, ErrorCodes.ApprovalRequired, busDecision.Reason);
 
                         JToken? parms = root["params"];
 

@@ -12,26 +12,33 @@ to the ETS6 AddIn (running inside ETS on Windows), then returns the response.
 
 ## Setup
 
-```bash
+```bat
 cd mcp-server
 uv sync --all-extras
 ```
 
 ## Running
 
-```bash
-# Production (Windows, connects to ETS6 AddIn via named pipe):
-KNX_BRIDGE_TRANSPORT=pipe uv run python -m knx_ets_mcp.server
+```bat
+:: Production (connects to the ETS AddIn via named pipe):
+set "KNX_BRIDGE_TRANSPORT=pipe"
+uv run python -m knx_ets_mcp.server
 
-# Development / testing (any OS, in-memory mock AddIn):
-KNX_BRIDGE_TRANSPORT=mock uv run python -m knx_ets_mcp.server
+:: Development / testing (in-memory mock AddIn, no ETS needed):
+set "KNX_BRIDGE_TRANSPORT=mock"
+uv run python -m knx_ets_mcp.server
 
-# Via the FastMCP CLI (alternative):
-KNX_BRIDGE_TRANSPORT=mock uv run fastmcp run src/knx_ets_mcp/server.py:mcp
+:: Via the FastMCP CLI (alternative):
+set "KNX_BRIDGE_TRANSPORT=mock"
+uv run fastmcp run src/knx_ets_mcp/server.py:mcp
 ```
 
-The server communicates over **stdio** (the standard MCP transport for
-Claude Desktop, Claude Code, etc.).
+By default the server listens on **Streamable HTTP** at `http://0.0.0.0:8765/mcp`
+(`MCP_HOST` / `MCP_PORT` / `MCP_PATH`). A network bind always requires a bearer token:
+set `MCP_AUTH_TOKEN`, or the server generates one on first start, stores it in
+`%LOCALAPPDATA%\knx-ets-mcp\http-token` and prints it. A loopback bind
+(`MCP_HOST=127.0.0.1`) needs no token. Set `MCP_TRANSPORT=stdio` when the AI client
+launches the server itself (as in the Claude Desktop config below).
 
 ### Claude Desktop configuration
 
@@ -42,8 +49,9 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "knx-ets-bridge": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/mcp-server", "python", "-m", "knx_ets_mcp.server"],
+      "args": ["run", "--directory", "C:\\path\\to\\mcp-server", "python", "-m", "knx_ets_mcp.server"],
       "env": {
+        "MCP_TRANSPORT": "stdio",
         "KNX_BRIDGE_TRANSPORT": "mock"
       }
     }
@@ -51,12 +59,12 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Remove the `env` block (or set to `pipe`) when running against a real
-ETS6 instance on Windows.
+Set `KNX_BRIDGE_TRANSPORT` to `pipe` (or remove that line) when running against a real
+ETS6 instance; keep `MCP_TRANSPORT=stdio`.
 
 ## Tests
 
-```bash
+```bat
 uv run pytest -v
 ```
 
@@ -96,11 +104,12 @@ deduplicated against the first).
 ## Architecture
 
 ```
-LLM  --(MCP/stdio)-->  MCPServer  --(client)-->  Transport  --(JSON/pipe)-->  ETS6 AddIn
-                        server.py                 client.py                   (C#, in ETS)
-                                                  |
-                                                  +-- MockTransport (tests)
-                                                  +-- NamedPipeTransport (prod)
+LLM  --(MCP/HTTP|stdio)-->  MCPServer  --(client)-->  Transport  --(JSON/pipe|tcp)-->  ETS6 AddIn
+                             server.py                 client.py                       (C#, in ETS)
+                                                       |
+                                                       +-- NamedPipeTransport (prod, same PC)
+                                                       +-- TcpTransport (prod, remote ETS)
+                                                       +-- MockTransport (tests)
 ```
 
 ## Transport selection
@@ -110,4 +119,5 @@ Set `KNX_BRIDGE_TRANSPORT` environment variable:
 | Value | Transport | Platform |
 |---|---|---|
 | `pipe` (default) | `NamedPipeTransport` | Windows only |
+| `tcp` | `TcpTransport` (`KNX_BRIDGE_PORT` + `KNX_BRIDGE_TOKEN` required, `KNX_BRIDGE_HOST` default `127.0.0.1`) | Any |
 | `mock` | `MockTransport` | Any (in-memory fake) |

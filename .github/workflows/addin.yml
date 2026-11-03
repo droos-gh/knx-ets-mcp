@@ -9,16 +9,32 @@ name: addin
 #
 # The ETS6 build targets the 6.4 SDK and runs on ETS 6.3 and 6.4; the ETS5 build targets
 # the 5.7 SDK.
+#
+# The `unit-tests` job runs the xUnit tests in addin-tests/ (pure AddIn logic, no ETS SDK
+# needed), on net48 and net10.0. It always runs, with or without the SDK secret.
 
 on:
   push:
     branches: [main]
-    paths: ['addin/**', '.github/workflows/addin.yml']
+    paths: ['addin/**', 'addin-tests/**', '.github/workflows/addin.yml']
   pull_request:
-    paths: ['addin/**', '.github/workflows/addin.yml']
+    paths: ['addin/**', 'addin-tests/**', '.github/workflows/addin.yml']
   workflow_dispatch:
 
 jobs:
+  unit-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run AddIn unit tests (net48 + net10.0)
+        run: dotnet test addin-tests/Knx.EtsBridge.Addin.Tests.csproj -c Release
+
   build:
     runs-on: windows-latest
     steps:

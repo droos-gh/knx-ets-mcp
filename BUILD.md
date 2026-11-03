@@ -1,17 +1,17 @@
 # Building the AddIn yourself
 
 How to build the ETS AddIn (`Knx.EtsBridge.Addin.dll`) from source, for ETS6 and/or
-ETS5, and package a sideload zip. The build runs on macOS, Linux, or Windows — you do
-**not** need Windows or Mono to compile.
+ETS5, and package a sideload zip. Everything below runs on Windows with the .NET SDK
+(`dotnet build`); Visual Studio is not required.
 
 For sideloading a finished build see the `install.bat` in a release zip; for the MCP
 server see [`mcp-server/`](mcp-server/).
 
 ## Prerequisites
 
-- **.NET SDK 8.0 or newer** (tested with 10.0). On macOS: `brew install dotnet`.
+- **.NET SDK 8.0 or newer** (tested with 10.0), from <https://dotnet.microsoft.com/download>.
   `Microsoft.NETFramework.ReferenceAssemblies` (a NuGet package, restored automatically)
-  lets the SDK cross-compile the net48 target on any OS.
+  provides the net48 reference assemblies, so no .NET Framework targeting pack is needed.
 - **The ETS SDK DLLs** — proprietary KNX material, **not** included in this repo. You must
   supply them yourself (see below). This is the only manual step.
 
@@ -35,16 +35,16 @@ Or copy them from an ETS installation directory. The four files:
 
 Put them in a folder and point `EtsDllPath` at it on the command line:
 
-```bash
-# ETS6 (default target -- runs on ETS 6.3 and 6.4)
-dotnet build addin -c Release -p:"EtsDllPath=/path/to/ets6-sdk/"
+```bat
+:: ETS6 (default target -- runs on ETS 6.3 and 6.4)
+dotnet build addin -c Release -p:"EtsDllPath=C:\path\to\ets6-sdk\\"
 
-# ETS5
-dotnet build addin -c Release -p:Ets5=true -p:"EtsDllPath=/path/to/ets5-sdk/"
+:: ETS5
+dotnet build addin -c Release -p:Ets5=true -p:"EtsDllPath=C:\path\to\ets5-sdk\\"
 ```
 
-On Windows, if ETS6 is installed, the default `EtsDllPath` is `C:\Program Files (x86)\ETS6\`,
-so no override is needed there.
+If ETS6 is installed, the default `EtsDllPath` is `C:\Program Files (x86)\ETS6\`, so no
+override is needed for the ETS6 build.
 
 ### Which SDK version to build against
 
@@ -58,11 +58,11 @@ logs the loaded SDK version at runtime; you verify compatibility yourself.
 
 From the repo root:
 
-```bash
-# ETS6 (default target, SDK 6.4)
+```bat
+:: ETS6 (default target, SDK 6.4)
 dotnet build addin -c Release
 
-# ETS5 (SDK 5.x)
+:: ETS5 (SDK 5.x)
 dotnet build addin -c Release -p:Ets5=true
 ```
 
@@ -83,6 +83,20 @@ expected to be **0 warnings / 0 errors**.
   `segment.*`, `tag.*`, segment navigation).
 - ETS5 has no configuration-dialog contract, so the ETS5 build configures the TCP
   endpoint / token directly in the AddIn panel (`GetAddInUI`).
+
+## Run the unit tests
+
+`addin-tests/` holds xUnit tests for the AddIn's pure logic (session token, bus-write
+policy). They compile the tested source files directly, so they need **no ETS SDK DLLs**:
+
+```bat
+dotnet test addin-tests -c Release
+```
+
+On Windows they run on both `net48` (the runtime the AddIn uses inside ETS) and
+`net10.0`. Only files that do not touch `Knx.Ets.*` or WPF types can be added to the test
+project (as linked `<Compile>` items in `Knx.EtsBridge.Addin.Tests.csproj`). CI runs them
+in the `unit-tests` job of `.github/workflows/addin.yml`.
 
 ## Package a sideload zip (ETS5 + ETS6)
 
@@ -120,18 +134,19 @@ Knx.EtsBridge.Addin.dll   (the only DLL; Newtonsoft.Json is embedded inside it)
 
 plus the matching manifest (`addin/AddInManifest.xml` for ETS6,
 `addin/AddInManifest.ets5.xml` renamed to `AddInManifest.xml` for ETS5) and `icon.png`.
-Guard the result: `find <pkg> -iname 'Knx.Ets.*.dll'` must be empty.
+Guard the result: `Get-ChildItem <pkg> -Recurse -Filter 'Knx.Ets.*.dll'` (PowerShell) must
+return nothing.
 
 ### Sign the payload folders
 
 Sign each `<AppId>` folder (writes `<AppId>.signature` next to it):
 
-```bash
-python3 -m venv .sign/venv && .sign/venv/bin/pip install pyuca
-export ETS_CONVERTER_KEY="$(cat /path/to/converter-key.xml)"   # <RSAKeyValue> XML
-.sign/venv/bin/python .sign/sign.py <pkg>/ets6/M0FFF-A0001
-.sign/venv/bin/python .sign/sign.py <pkg>/ets5/M0FFF-A0001
-.sign/venv/bin/python .sign/sign.py <pkg>/ets6/M0FFF-A0001 --check   # verify
+```powershell
+py -m venv .sign\venv; .sign\venv\Scripts\pip install pyuca
+$env:ETS_CONVERTER_KEY = Get-Content -Raw C:\path\to\converter-key.xml   # <RSAKeyValue> XML
+.sign\venv\Scripts\python .sign\sign.py <pkg>\ets6\M0FFF-A0001
+.sign\venv\Scripts\python .sign\sign.py <pkg>\ets5\M0FFF-A0001
+.sign\venv\Scripts\python .sign\sign.py <pkg>\ets6\M0FFF-A0001 --check   # verify
 ```
 
 `ETS_CONVERTER_KEY` is the ETS "converter" RSA key (a fixed 1024-bit key embedded in

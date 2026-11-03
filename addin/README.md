@@ -4,41 +4,42 @@ ETS6 project-level AddIn that exposes an IPC named-pipe server for the
 knx-ets-bridge MCP adapter. Built against the ETS6 6.4 SDK by default; the
 resulting DLL runs on ETS 6.3 and 6.4.
 
-## Build on macOS
+## Build (Windows)
 
 Prerequisites: .NET SDK 8.0+ (tested with 10.0).
 
-```bash
-cd addin/
+```bat
+cd addin
 dotnet build -c Release
 ```
 
-The build uses `Microsoft.NETFramework.ReferenceAssemblies` for cross-compilation
+The build uses `Microsoft.NETFramework.ReferenceAssemblies` to target net48
 and resolves the ETS SDK DLLs from the configured `EtsDllPath` (see BUILD.md).
-Output: `bin/Release/net48/Knx.EtsBridge.Addin.dll` plus NuGet runtime dependencies
-(System.Text.Json etc.) -- all are needed for sideloading.
+Output in `bin/Release/net48/`: a **single self-contained** `Knx.EtsBridge.Addin.dll`
+(Newtonsoft.Json is embedded inside it as a resource), plus `AddInManifest.xml` and
+`icon.png`. There are no other dependency DLLs to ship.
 
 ## Sideload on Windows
 
-1. Build or copy the Release output.
+The release zip's `install.bat` does all of this for you (for every installed ETS
+version, including clearing the AddIn cache). To sideload a build by hand:
+
+1. Close ETS6.
 2. Create the sideload directory:
    ```
-   C:\ProgramData\KNX\ETS6\Apps\AddIns\M00FF-B0001\
+   C:\ProgramData\KNX\ETS6\Apps\AddIns\M0FFF-A0001\
    ```
-   (`M00FF-B0001` = the AppId in AddInManifest.xml; replace with a registered ID
-   for production.)
-3. Copy the **entire contents** of `bin/Release/net48/` into that directory:
+   (`M0FFF-A0001` = the AppId in `AddInManifest.xml`; a placeholder -- replace it with a
+   KNX-registered ID before distribution.)
+3. Copy these three files from `bin/Release/net48/` into that directory:
    - `Knx.EtsBridge.Addin.dll` (the AddIn itself)
    - `AddInManifest.xml`
-   - `System.Text.Json.dll` and all other NuGet dependency DLLs
-     (`System.Text.Encodings.Web.dll`, `System.Memory.dll`,
-     `System.Buffers.dll`, `System.Runtime.CompilerServices.Unsafe.dll`,
-     `Microsoft.Bcl.AsyncInterfaces.dll`, `System.Threading.Tasks.Extensions.dll`,
-     `System.Numerics.Vectors.dll`, `System.ValueTuple.dll`)
+   - `icon.png`
 
    Do **not** copy the ETS SDK DLLs (`Knx.Ets.Sdk.dll` etc.) -- ETS provides
    those at runtime.
-4. (Re)start ETS6.
+4. Start ETS6. If an older build was installed before, delete
+   `%LOCALAPPDATA%\Knx\ETS6\AddInsCache` first so ETS picks up the new DLL.
 5. Open a project. The IPC server starts automatically on Initialize and writes
    the pipe name + token to
    `%LOCALAPPDATA%\knx-ets-bridge\session.json`.
@@ -65,14 +66,16 @@ EtsBridgeAddIn          Entry class (IEts4AddInV2 + IEts5ClosableAddin)
   +-- VersionGuard      Logs the loaded SDK version on startup
   +-- EtsDispatcher     Marshals all SDK calls to the WPF UI thread
   +-- Ets6ProjectGateway   SDK operations (the ONLY file touching ETS types)
-  +-- IpcServer         Named-pipe JSON-RPC server (protocol.md contract)
+  +-- IpcServer         Named-pipe (+ optional TCP) JSON-RPC server (protocol.md contract)
+  +-- BridgeToken       Session-token generation + constant-time comparison
+  +-- BusWritePolicy    "Bus read-only" / firmware gates for bus-writing methods
 ```
 
 ## IPC protocol
 
 - Transport: Windows named pipe, newline-delimited JSON, UTF-8 (no BOM).
 - All field names are **camelCase** on the wire (PascalCase DTOs are serialized
-  with `JsonNamingPolicy.CamelCase`).
+  by Newtonsoft.Json with `CamelCasePropertyNamesContractResolver`).
 - Refs are opaque strings. See Ets6ProjectGateway.cs header for the encoding.
 - Session file and pipe stream use `UTF8Encoding(false)` (no BOM) to avoid
   breaking non-.NET clients.
@@ -135,9 +138,9 @@ test suite passes.
 | `todo.create/delete`       | MUTATING | Project to-do items                                                            |
 | `projectHistory.add/delete`| MUTATING | Audit trail entries                                                            |
 | `project.navigateTo`       | COMMAND  | Selects object in ETS UI                                                       |
-| `device.program`           | BUS      | Runs automatically via `Root.StartDownload`                                    |
+| `device.program`           | BUS      | Runs automatically via `Root.StartDownload` (blocked by "Bus read-only")       |
 | `device.unload`            | BUS      | Unload application program                                                     |
-| `firmware.update`          | BUS      | Gated: requires "Unattended firmware update" preference                        |
+| `firmware.update`          | BUS      | Gated: requires "Unattended firmware update" (and "Bus read-only" off)         |
 | `bus.setIndividualAddress`  | BUS      | Programs project address onto bus (job-based)                                  |
 | `device.reset`             | BUS      | Root.ResetDevice                                                               |
 | `job.status/cancel`        | INFRA    | Async job tracking and cancellation                                            |

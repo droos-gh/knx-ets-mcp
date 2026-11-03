@@ -120,12 +120,22 @@ def _normalize_individual_address(raw: str) -> str:
     return f"{nums[0]}.{nums[1]}.{nums[2]}"
 
 
+# Methods that write to the KNX bus / physical devices. Mirrors the AddIn's
+# BusWritePolicy: refused with approval_required while "Bus read-only" is on.
+BUS_WRITE_METHODS = frozenset({
+    "device.program", "firmware.update", "group.write",
+    "device.unload", "device.reset", "bus.setIndividualAddress",
+})
+
+
 class MockTransport(Transport):
     """Fake AddIn that processes protocol requests in-memory."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, bus_read_only: bool = False) -> None:
         self._token = MOCK_TOKEN
         self._connected = False
+        # Simulates the AddIn's "Bus read-only" preference (default off, like the AddIn).
+        self.bus_read_only = bus_read_only
 
         # -- In-memory project model ------------------------------------------
         self._revision = "rev-001"
@@ -223,6 +233,15 @@ class MockTransport(Transport):
         if idempotency_key and idempotency_key in self._idempotency_cache:
             cached = self._idempotency_cache[idempotency_key]
             return self._ok(req_id, cached)
+
+        # Bus-write gate (after idempotency replay, before the revision check --
+        # same order as the AddIn's IpcServer).
+        if self.bus_read_only and method in BUS_WRITE_METHODS:
+            return self._error(
+                req_id, "approval_required",
+                f"{method} writes to the KNX bus, but the AddIn is in 'Bus read-only' "
+                "mode. Ask the user to disable 'Bus read-only' in the AddIn "
+                "configuration if this operation is intended.")
 
         # Revision check (after idempotency replay)
         if expected_rev is not None and expected_rev != self._revision:
