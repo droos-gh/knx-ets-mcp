@@ -3,7 +3,7 @@ name: addin
 # Builds the ETS AddIn (net48) for both ETS6 and ETS5.
 #
 # The KNX ETS SDK DLLs are proprietary and NOT in this repo. CI fetches them from a
-# PRIVATE repo (knx-ai/knx-ets-sdk, layout: ets6/ + ets5/) via the SDK_REPO_TOKEN secret
+# PRIVATE repo (droos-gh/knx-ets-sdk, layout: ets6/ + ets5/) via the SDK_REPO_TOKEN secret
 # (a token with read access to that private repo). Without the secret the build is
 # skipped (not failed) -- the SDK cannot be exposed via public CI.
 #
@@ -55,7 +55,7 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         uses: actions/checkout@v7
         with:
-          repository: knx-ai/knx-ets-sdk
+          repository: droos-gh/knx-ets-sdk
           token: ${{ secrets.SDK_REPO_TOKEN }}
           path: knx-sdk
 
