@@ -1,5 +1,9 @@
 name: mcp-server
 
+# Builds and tests the .NET 10 MCP server (mcp-server/). Tests run against the
+# in-memory MockTransport, so they need neither ETS nor Windows; the matrix still
+# covers Windows because production runs there next to ETS.
+
 on:
   push:
     branches: [main]
@@ -8,28 +12,57 @@ on:
     paths: ['mcp-server/**', '.github/workflows/mcp-server.yml']
   workflow_dispatch:
 
-defaults:
-  run:
-    working-directory: mcp-server
-
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        # Prod runs on Windows next to ETS; tests use the mock transport and are
-        # cross-platform, so we cover both.
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
         with:
-          enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --all-extras --dev
-      - name: Run tests
-        run: uv run pytest -v
+          dotnet-version: '10.0.x'
+
+      - name: Build
+        run: dotnet build mcp-server/tests/KnxEtsMcp.Tests/KnxEtsMcp.Tests.csproj -c Release
+
+      - name: Test
+        run: dotnet test mcp-server/tests/KnxEtsMcp.Tests/KnxEtsMcp.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
+
+  smoke:
+    # Starts the real exe over HTTP (mock AddIn) and checks the auth gate end to end.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build server
+        run: dotnet build mcp-server/src/KnxEtsMcp/KnxEtsMcp.csproj -c Release -o out
+
+      - name: HTTP auth smoke test
+        shell: bash
         env:
           KNX_BRIDGE_TRANSPORT: mock
+          MCP_HOST: 127.0.0.2
+          MCP_PORT: '8799'
+          MCP_AUTH_TOKEN_FILE: ${{ runner.temp }}/http-token
+        run: |
+          dotnet out/knx-ets-mcp.dll > server.log 2>&1 &
+          for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.2:8799/mcp && break; sleep 0.5; done
+          tok=$(tr -d '\n' < "$MCP_AUTH_TOKEN_FILE")
+          body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}'
+          h=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
+          none=$(curl -s -o /dev/null -w '%{http_code}' "${h[@]}" -d "$body" http://127.0.0.2:8799/mcp)
+          bad=$(curl -s -o /dev/null -w '%{http_code}' "${h[@]}" -H 'Authorization: Bearer nope' -d "$body" http://127.0.0.2:8799/mcp)
+          good=$(curl -s -o /dev/null -w '%{http_code}' "${h[@]}" -H "Authorization: Bearer $tok" -d "$body" http://127.0.0.2:8799/mcp)
+          echo "no token: $none / bad token: $bad / good token: $good"
+          sed "s/$tok/<token>/g" server.log | head -20
+          [ "$none" = 401 ] && [ "$bad" = 401 ] && [ "$good" = 200 ]

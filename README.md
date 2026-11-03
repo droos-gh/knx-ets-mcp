@@ -73,11 +73,9 @@ firmware.
 - **Windows** (x64) to run ETS.
 - A **bus interface** configured in ETS for bus operations (KNXnet/IP or USB).
 - An **MCP-capable AI client** (e.g. Claude Desktop or Claude Code).
-- To run the MCP server (recommended: on the ETS machine): nothing extra — the bundled
-  `knx-ets-mcp.exe` ships its own Python and can serve your LAN over HTTP. Your other
-  machines then need only an MCP client; they connect to a URL, no Python required.
-- Only if you run the server on a *different* machine than ETS (option C below):
-  **Python 3.11+** there, ideally with [`uv`](https://docs.astral.sh/uv/).
+- To run the MCP server: nothing extra — the bundled `Start-MCP-Server.exe` is a
+  self-contained .NET 10 program (no runtime to install) and can serve your LAN over HTTP.
+  Your other machines then need only an MCP client; they connect to a URL.
 
 ## Setup (step by step)
 
@@ -89,15 +87,12 @@ From the [GitHub **Releases** page](https://github.com/droos-gh/knx-ets-mcp/rele
 download the single bundle **`knx-ets-mcp-<version>.zip`**. It contains everything:
 
 - the ETS AddIn (for ETS 5 and ETS 6) + the installer, and
-- the MCP server as a standalone Windows `.exe` (bundles Python).
+- the MCP server as a standalone Windows `.exe` (self-contained .NET 10, no runtime to install).
 
 **Extract the whole zip first** (right-click the zip → *Extract All*). Inside you get:
 
 - **`install.bat`** — installs the ETS AddIn.
 - **`Start-MCP-Server.exe`** — the MCP server (double-click to run).
-
-(A Python wheel is also included under `mcp-server-python/`, and attached to the release
-separately, for those who prefer to run the server with their own Python.)
 
 > **Do not run `install.bat` from inside the zip.** Windows' built-in zip viewer extracts
 > only the single file you click to a temp folder, so the installer can't find the AddIn
@@ -222,9 +217,8 @@ ETS over the **ETS TCP endpoint** instead of the pipe. Enable it in the AddIn's
 **Configuration / Preferences**: **Enable TCP endpoint**, **Port** (default `8730`),
 **Allow LAN**; the panel shows the endpoint and the **token** (authentication is always on:
 leave the field empty and a random token is generated; confirm the dialog, or type your
-own, to keep the same token across ETS restarts). Then run the server from this repo pointing at it (if you don't have
-the repo on that machine, install the release wheel once with
-`uv tool install ./knx_ets_mcp-<version>-py3-none-any.whl` and run `knx-ets-mcp` instead):
+own, to keep the same token across ETS restarts). Then copy `Start-MCP-Server.exe` to the
+other machine and start it from a terminal, pointing it at ETS:
 
 ```bat
 set "MCP_TRANSPORT=http"
@@ -232,7 +226,7 @@ set "KNX_BRIDGE_TRANSPORT=tcp"
 set "KNX_BRIDGE_HOST=<ets-ip>"
 set "KNX_BRIDGE_PORT=8730"
 set "KNX_BRIDGE_TOKEN=<token-from-the-panel>"
-uv run --directory C:\path\to\knx-ets-mcp\mcp-server knx-ets-mcp
+Start-MCP-Server.exe
 ```
 
 Set `KNX_BRIDGE_TOKEN` to the token shown in the AddIn panel (a missing or wrong token is

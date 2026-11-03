@@ -12,7 +12,8 @@ and program devices.
 ## Core decisions
 
 - **Architecture: Option A** = ETS AddIn (in-process, C#/net48, System.AddIn) with
-  a local IPC endpoint, fronted by a platform-independent MCP server as adapter.
+  a local IPC endpoint, fronted by an MCP server as adapter (C#/.NET 10, official MCP C#
+  SDK `ModelContextProtocol` 2.3; formerly Python/FastMCP).
 - **Multi-version:** the AddIn builds against the **ETS6 6.4 SDK (Build 8658)** by
   default and runs on both ETS 6.3 and 6.4. An `AppDomain.AssemblyResolve` handler
   binds the `Knx.Ets.*` references to whatever SDK version the host ETS has actually
@@ -183,7 +184,8 @@ thread and an undo marker (see Hard constraints).
   the mock, and unit-tested with xUnit in `addin-tests/` (together with `Host/BridgeToken.cs`;
   the test project compiles these pure files directly, so it runs without the ETS SDK, on
   net48 + net10.0 -- `dotnet test addin-tests`). Every MCP tool carries `ToolAnnotations` (READ_ONLY / READ_ONLY_EXTERNAL /
-  PROJECT_ADDITIVE / PROJECT_DESTRUCTIVE / BUS_WRITE in `server.py`); a test enforces that
+  PROJECT_ADDITIVE / PROJECT_DESTRUCTIVE / BUS_WRITE via `[McpServerTool(ReadOnly=..., Destructive=...,
+  Idempotent=..., OpenWorld=...)]` in `mcp-server/src/KnxEtsMcp/Application/Tools/`); a test enforces that
   each tool has one. Bus access is serialized
   independently.
 - **Setting parameters** can (de)activate ComObjects and change the memory layout.
@@ -204,8 +206,11 @@ thread and an undo marker (see Hard constraints).
 - **ETS SDKs** -- ETS6 6.4 (Build 8658) and ETS5 5.7 from the official KNX SDK downloads
   (see BUILD.md). The SDK demos (`Knx.Sdk.Demos.EtsApp` project-wide, `.DcaApp`
   device-scoped) and the SDK XML docs are the primary API source.
-- **FastMCP v3** (PrefectHQ) -- the MCP server framework (`from fastmcp import FastMCP`,
-  `@mcp.tool`), pinned `>=3,<4`.
+- **MCP C# SDK** (`ModelContextProtocol` + `ModelContextProtocol.AspNetCore` 2.3.0) -- the MCP
+  server framework (`[McpServerToolType]` classes, `[McpServerTool]` methods, `WithHttpTransport`
+  / `WithStdioServerTransport`). It replaced the former Python server (FastMCP v3); the
+  tool classes were generated from it 1:1 (same tool names, snake_case argument names,
+  descriptions and annotations) and are maintained by hand since.
 
 > The KNX SDK DLLs are proprietary licensed material and are **not** included in this
 > repository. Supply your own (see BUILD.md).
@@ -215,6 +220,11 @@ thread and an undo marker (see Hard constraints).
 - **Windows.** Build, run and test on Windows: `dotnet build` with
   `Microsoft.NETFramework.ReferenceAssemblies` targets net48. SDK DLLs via `HintPath`,
   `Private=false`.
+- **MCP server:** .NET 10 (`mcp-server/src/KnxEtsMcp`, Web SDK). `dotnet test
+  mcp-server/tests/KnxEtsMcp.Tests` runs everything against the in-memory `MockTransport`
+  (a C# port of the former Python mock -- keep it in parity with the AddIn). Released as a
+  self-contained single-file `win-x64` exe (`Start-MCP-Server.exe` in the release zip).
+  Environment variables are unchanged from the Python server (MCP_*, KNX_BRIDGE_*).
 - **Sideload:** copy DLL + `AddInManifest.xml` to
   `C:\ProgramData\KNX\ETS6\Apps\AddIns\<AppId>\`. No KNX approval needed for local
   use.
@@ -411,12 +421,12 @@ so empty is not authoritative.
   in-memory configuration (persisted once the Configuration dialog is confirmed); the pipe
   client reads it from `session.json`, a TCP client copies it from the panel. Constant-time
   comparison. There is no unauthenticated mode any more.
-- **Auth (MCP HTTP endpoint):** secure by default (`mcp-server/src/knx_ets_mcp/http_auth.py`).
+- **Auth (MCP HTTP endpoint):** secure by default (`mcp-server/src/KnxEtsMcp/Application/HttpAuth.cs`).
   A network bind always requires a bearer token: `MCP_AUTH_TOKEN`, else one generated once
   and persisted per user (`MCP_AUTH_TOKEN_FILE`, default `%LOCALAPPDATA%\knx-ets-mcp\http-token`),
-  printed at startup. Loopback binds need none (FastMCP host/origin protection covers DNS
-  rebinding); `MCP_ALLOW_NO_AUTH=1` is the explicit opt-out. Auth is attached in `main()`,
-  not at import.
+  printed at startup. Loopback binds need none (ASP.NET host filtering, `AllowedHosts`, covers DNS
+  rebinding); `MCP_ALLOW_NO_AUTH=1` is the explicit opt-out. Bearer check is a constant-time
+  middleware in `Program.cs`.
 
 ### Deliberately NOT exposed
 
