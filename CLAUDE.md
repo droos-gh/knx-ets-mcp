@@ -180,7 +180,9 @@ thread and an undo marker (see Hard constraints).
   preference (default off) refuses every bus write (`device.program`, `firmware.update`,
   `group.write`, `device.unload`, `device.reset`, `bus.setIndividualAddress`) with
   `approval_required`; the decision lives in the pure `Host/BusWritePolicy.cs`, mirrored by
-  the mock. Every MCP tool carries `ToolAnnotations` (READ_ONLY / READ_ONLY_EXTERNAL /
+  the mock, and unit-tested with xUnit in `addin-tests/` (together with `Host/BridgeToken.cs`;
+  the test project compiles these pure files directly, so it runs without the ETS SDK, on
+  net48 + net10.0 -- `dotnet test addin-tests`). Every MCP tool carries `ToolAnnotations` (READ_ONLY / READ_ONLY_EXTERNAL /
   PROJECT_ADDITIVE / PROJECT_DESTRUCTIVE / BUS_WRITE in `server.py`); a test enforces that
   each tool has one. Bus access is serialized
   independently.

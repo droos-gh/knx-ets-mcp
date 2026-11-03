@@ -84,6 +84,20 @@ expected to be **0 warnings / 0 errors**.
 - ETS5 has no configuration-dialog contract, so the ETS5 build configures the TCP
   endpoint / token directly in the AddIn panel (`GetAddInUI`).
 
+## Run the unit tests
+
+`addin-tests/` holds xUnit tests for the AddIn's pure logic (session token, bus-write
+policy). They compile the tested source files directly, so they need **no ETS SDK DLLs**:
+
+```bat
+dotnet test addin-tests -c Release
+```
+
+On Windows they run on both `net48` (the runtime the AddIn uses inside ETS) and
+`net10.0`. Only files that do not touch `Knx.Ets.*` or WPF types can be added to the test
+project (as linked `<Compile>` items in `Knx.EtsBridge.Addin.Tests.csproj`). CI runs them
+in the `unit-tests` job of `.github/workflows/addin.yml`.
+
 ## Package a sideload zip (ETS5 + ETS6)
 
 A release zip has this layout — smart install scripts at the root plus one payload folder

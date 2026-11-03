@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Unit tests for the AddIn's PURE logic (no ETS SDK, no WPF), so they build and run
+       without the proprietary KNX SDK DLLs.
+
+       The tested sources are compiled INTO this test assembly (linked <Compile> items
+       below) instead of referencing Knx.EtsBridge.Addin.csproj, which cannot build
+       without the SDK. Only add files here that do not touch Knx.Ets.* or WPF types.
+
+       net48 = the runtime the AddIn actually runs on inside ETS (Windows only);
+       net10.0 = also runnable on non-Windows CI. -->
+  <PropertyGroup>
+    <TargetFrameworks Condition="'$(OS)' == 'Windows_NT'">net48;net10.0</TargetFrameworks>
+    <TargetFrameworks Condition="'$(OS)' != 'Windows_NT'">net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>Knx.EtsBridge.Addin.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../addin/Host/BridgeToken.cs" Link="Sources/BridgeToken.cs" />
+    <Compile Include="../addin/Host/BusWritePolicy.cs" Link="Sources/BusWritePolicy.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- .NET Framework 4.8 reference assemblies (no targeting pack / Visual Studio needed). -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
