@@ -8,7 +8,7 @@ public sealed partial class MockTransport
 
     private JsonNode? HandleBridgeInfo(JsonNode? _) => new JsonObject
     {
-        ["addinVersion"] = "0.3.0",
+        ["addinVersion"] = "0.4.0",
         ["sdkVersion"] = "6.3.7959.0",       // runtime-loaded (host ETS) SDK
         ["builtAgainstSdk"] = "6.4.8658.0",  // compile-time SDK (default build target)
         ["projectName"] = Clone(_state.Project["name"]),
