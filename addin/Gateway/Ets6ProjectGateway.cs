@@ -3279,14 +3279,49 @@ namespace Knx.EtsBridge.Addin
 
         public void ProjectUndo()
         {
+            // UndoManager.Undo() silently does nothing when the stack is empty (SDK XML), so
+            // guard first: report an explicit error instead of a false success, and do not
+            // advance the revision when nothing was undone.
+            if (!HasMarkers(Project.UndoManager.UndoMarkers))
+            {
+                throw new ArgumentException(
+                    "Nothing to undo: the project has no undoable action on the stack.");
+            }
+
             Project.UndoManager.Undo();
             BumpRevision();
         }
 
         public void ProjectRedo()
         {
+            if (!HasMarkers(Project.UndoManager.RedoMarkers))
+            {
+                throw new ArgumentException(
+                    "Nothing to redo: there is no undone action to restore.");
+            }
+
             Project.UndoManager.Redo();
             BumpRevision();
+        }
+
+        /// <summary>
+        /// True when an undo/redo marker list has at least one entry. Typed as the non-generic
+        /// <see cref="System.Collections.IEnumerable"/> so it works whatever concrete collection
+        /// the SDK's UndoManager returns, and it does not materialise the whole list.
+        /// </summary>
+        private static bool HasMarkers(System.Collections.IEnumerable? markers)
+        {
+            if (markers is null)
+                return false;
+            var enumerator = markers.GetEnumerator();
+            try
+            {
+                return enumerator.MoveNext();
+            }
+            finally
+            {
+                (enumerator as IDisposable)?.Dispose();
+            }
         }
 
         // ---------------------------------------------------------------

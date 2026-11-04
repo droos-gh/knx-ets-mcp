@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using KnxEtsMcp.BusinessLogic.Gateways;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace KnxEtsMcp.Application.Tools;
@@ -19,7 +20,9 @@ public sealed class BatchTools(IKnxBridge bridge)
         Use this to parametrise and link across many devices/channels in one pass
         instead of dozens of single calls (fewer round-trips, one undo step).
 
-        operations: list of {"method": <name>, "params": {...}} in execution order.
+        operations: a non-empty JSON array of objects, each {"method": <name>, "params": {...}},
+          in execution order. Pass a real JSON array, not a string -- e.g.
+          [{"method": "ga.create", "params": {"name": "A", "address": "1/0/1"}}].
           Only fast, undo-reversible project mutations are allowed (ga.*, link.*,
           param.*, device.* label/address, comObject.*, building*, groupRange.*,
           area/line/segment/trade/tag/todo, etc.). NOT allowed: device.program,
@@ -53,11 +56,92 @@ public sealed class BatchTools(IKnxBridge bridge)
         string? expected_project_revision = null,
         CancellationToken cancellationToken = default)
     {
-        var parameters = new JsonObject()
-            .Set("operations", operations)
+        // The `operations` parameter has no concrete .NET type, so the generated tool schema
+        // is untyped; some MCP clients then send the array serialised as a JSON *string*
+        // rather than as a JSON array. Accept both forms here (a real array, or a
+        // string-encoded array) and reject anything else with a clear, typed error -- so the
+        // bridge always receives a genuine array instead of refusing a stringified one.
+        var opsArray = NormalizeOperations(operations);
+        var parameters = new JsonObject();
+        parameters["operations"] = opsArray; // freshly parsed, so never already parented
+        parameters
             .Set("atomic", atomic)
             .Set("validateOnly", validate_only);
         var result = await bridge.CallAsync("batch.apply", parameters, expected_project_revision, cancellationToken);
         return result;
     }
+
+    /// <summary>
+    /// Coerces the <c>operations</c> argument into a non-empty JSON array. Accepts a JSON
+    /// array as-is, and a JSON string that itself contains an array (the shape some clients
+    /// send for an untyped parameter). Any other shape -- or an empty array -- throws an
+    /// <c>invalid_params</c> tool error that names the JSON type actually received.
+    /// </summary>
+    internal static JsonArray NormalizeOperations(JsonElement operations)
+    {
+        JsonNode? node;
+        if (operations.ValueKind == JsonValueKind.String)
+        {
+            var raw = operations.GetString() ?? string.Empty;
+            try
+            {
+                node = JsonNode.Parse(raw);
+            }
+            catch (JsonException ex)
+            {
+                throw Invalid(
+                    "'operations' was sent as a JSON string that is not valid JSON "
+                  + $"({ex.Message}). Send a JSON array of {{\"method\",\"params\"}} objects.");
+            }
+
+            if (node is not JsonArray)
+            {
+                throw Invalid(
+                    $"'operations' was sent as a JSON string, but its content is a {Describe(node)}, "
+                  + "not an array. Send a JSON array of {\"method\",\"params\"} objects.");
+            }
+        }
+        else if (operations.ValueKind == JsonValueKind.Array)
+        {
+            node = JsonNode.Parse(operations.GetRawText());
+        }
+        else
+        {
+            throw Invalid(
+                $"'operations' must be a JSON array of {{\"method\",\"params\"}} objects, "
+              + $"but a JSON {Describe(operations.ValueKind)} was received.");
+        }
+
+        if (node is not JsonArray array)
+            throw Invalid("'operations' must be a JSON array of {\"method\",\"params\"} objects.");
+        if (array.Count == 0)
+            throw Invalid("'operations' must be a non-empty array of {\"method\",\"params\"} objects.");
+        return array;
+    }
+
+    // The protocol error code the LLM sees in "[code] message" (docs/protocol.md); the mock
+    // and the AddIn use the same literal for a bad-argument rejection.
+    private static McpException Invalid(string message)
+        => new($"[invalid_params] {message}");
+
+    /// <summary>A human-readable name for the JSON type of a parsed node.</summary>
+    private static string Describe(JsonNode? node) => node switch
+    {
+        null => "null",
+        JsonArray => "array",
+        JsonObject => "object",
+        JsonValue value => Describe(value.GetValueKind()),
+        _ => "value",
+    };
+
+    private static string Describe(JsonValueKind kind) => kind switch
+    {
+        JsonValueKind.Array => "array",
+        JsonValueKind.Object => "object",
+        JsonValueKind.String => "string",
+        JsonValueKind.Number => "number",
+        JsonValueKind.True or JsonValueKind.False => "boolean",
+        JsonValueKind.Null or JsonValueKind.Undefined => "null",
+        _ => "value",
+    };
 }

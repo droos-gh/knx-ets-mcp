@@ -46,6 +46,14 @@ public sealed partial class MockTransport : ITransport
     private readonly OrderedDictionary<string, JsonArray> _importablePaths = new();
     private readonly Dictionary<string, JsonNode?> _idempotencyCache = new(StringComparer.Ordinal);
 
+    // Undo/redo stacks of full project snapshots. A checkpoint is pushed in Send() after any
+    // top-level project mutation that actually changed the revision (so bus writes and
+    // catalog-store ops, which do not bump the revision, are never undoable -- matching the
+    // AddIn, which wraps only project mutations in UndoManager markers). batch.apply is one
+    // top-level call, so one checkpoint covers the whole batch and a single undo reverts it.
+    private readonly List<UndoEntry> _undoStack = [];
+    private readonly List<UndoEntry> _redoStack = [];
+
     /// <summary>Creates the mock with its seed project.</summary>
     /// <param name="busReadOnly">Initial value of <see cref="BusReadOnly"/>.</param>
     public MockTransport(bool busReadOnly = false)
@@ -169,6 +177,14 @@ public sealed partial class MockTransport : ITransport
         if (Py.HashKey(method) is not { } methodName || !_handlers.TryGetValue(methodName, out var handler))
             return Error(reqId, "invalid_params", $"Unknown method: {Py.Str(method)}");
 
+        // Snapshot BEFORE a potentially-undoable mutation so a successful change can be
+        // pushed onto the undo stack. project.undo/redo manage the stacks themselves and
+        // are excluded here.
+        var undoable = ProtocolMethods.Mutating.Contains(methodName)
+            && methodName is not ("project.undo" or "project.redo");
+        var checkpoint = undoable ? SnapshotNow() : null;
+        var revisionBefore = _state.RevisionCounter;
+
         JsonNode? result;
         try
         {
@@ -177,6 +193,15 @@ public sealed partial class MockTransport : ITransport
         catch (MockProtocolException ex)
         {
             return Error(reqId, ex.Code, ex.Message);
+        }
+
+        // A mutation is undoable only if it actually advanced the revision. Bus writes and
+        // catalog-store ops do not bump it, and a fully-rolled-back atomic batch restores it,
+        // so none of those leave an undo entry.
+        if (checkpoint is not null && _state.RevisionCounter != revisionBefore)
+        {
+            _undoStack.Add(checkpoint);
+            _redoStack.Clear();
         }
 
         // Cache mutating results
@@ -335,6 +360,27 @@ public sealed partial class MockTransport : ITransport
         _state.RevisionCounter++;
         _state.Revision = $"rev-{_state.RevisionCounter:D3}";
     }
+
+    /// <summary>A full, isolated snapshot of the undoable project state (state tree + links).</summary>
+    private UndoEntry SnapshotNow() => new(_state.DeepCopy(), [.. _links]);
+
+    /// <summary>
+    /// Restores a snapshot while keeping the revision counter monotonic: the project tree and
+    /// links go back to the captured values, but the revision then advances to a fresh value
+    /// (an undo/redo is itself a change), so revisions never repeat or go backwards.
+    /// </summary>
+    private void RestoreSnapshot(UndoEntry entry)
+    {
+        var highWater = _state.RevisionCounter;
+        _state = entry.State.DeepCopy();
+        _links.Clear();
+        _links.AddRange(entry.Links);
+        _state.RevisionCounter = highWater;
+        BumpRevision();
+    }
+
+    /// <summary>One undo/redo checkpoint: a deep copy of the project tree and a copy of the links.</summary>
+    private sealed record UndoEntry(ProjectState State, List<(string CoRef, string GaRef)> Links);
 
     /// <summary>Python <c>_make_ref</c>: <c>{prefix}-{uuid4().hex[:8]}</c>.</summary>
     private static string MakeRef(string prefix) => $"{prefix}-{Guid.NewGuid().ToString("N")[..8]}";

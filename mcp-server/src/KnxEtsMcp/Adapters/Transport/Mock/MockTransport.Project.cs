@@ -26,13 +26,29 @@ public sealed partial class MockTransport
 
     private JsonNode? HandleProjectUndo(JsonNode? _)
     {
-        BumpRevision();
+        // Mirror the AddIn (UndoManager): undoing with an empty stack is an explicit error,
+        // not a silent ok, and it must not advance the revision.
+        if (_undoStack.Count == 0)
+            throw Fail("invalid_params", "Nothing to undo: no undoable action on the stack.");
+
+        var redoEntry = SnapshotNow();                 // current state, so redo can restore it
+        var entry = _undoStack[^1];
+        _undoStack.RemoveAt(_undoStack.Count - 1);
+        RestoreSnapshot(entry);                         // revert to the pre-mutation state
+        _redoStack.Add(redoEntry);
         return OkTrue();
     }
 
     private JsonNode? HandleProjectRedo(JsonNode? _)
     {
-        BumpRevision();
+        if (_redoStack.Count == 0)
+            throw Fail("invalid_params", "Nothing to redo: no undone action to restore.");
+
+        var undoEntry = SnapshotNow();                 // current state, so a later undo can restore it
+        var entry = _redoStack[^1];
+        _redoStack.RemoveAt(_redoStack.Count - 1);
+        RestoreSnapshot(entry);                         // re-apply the undone state
+        _undoStack.Add(undoEntry);
         return OkTrue();
     }
 
