@@ -68,20 +68,28 @@ jobs:
       - name: Build ETS6 (6.4 SDK -- runs on ETS 6.3 and 6.4)
         if: steps.sdk.outputs.available == 'true'
         shell: bash
-        run: dotnet build addin/*.csproj -c Release "-p:EtsDllPath=$GITHUB_WORKSPACE/knx-sdk/ets6/"
+        run: |
+          dotnet build addin/*.csproj -c Release "-p:EtsDllPath=$GITHUB_WORKSPACE/knx-sdk/ets6/"
+          # Both builds write the same output folder: keep each DLL with its own manifest.
+          mkdir -p out/ets6
+          cp addin/bin/Release/net48/Knx.EtsBridge.Addin.dll addin/AddInManifest.xml out/ets6/
 
       - name: Build ETS5 (5.7 SDK)
         if: steps.sdk.outputs.available == 'true'
         shell: bash
-        run: dotnet build addin/*.csproj -c Release -p:Ets5=true "-p:EtsDllPath=$GITHUB_WORKSPACE/knx-sdk/ets5/"
+        run: |
+          dotnet build addin/*.csproj -c Release -p:Ets5=true "-p:EtsDllPath=$GITHUB_WORKSPACE/knx-sdk/ets5/"
+          mkdir -p out/ets5
+          cp addin/bin/Release/net48/Knx.EtsBridge.Addin.dll out/ets5/
+          cp addin/AddInManifest.ets5.xml out/ets5/AddInManifest.xml
 
       - name: Guard -- fail if proprietary SDK DLLs in build output
         if: steps.sdk.outputs.available == 'true'
         shell: bash
         run: |
-          if find addin/bin/Release/net48/ -iname 'Knx.Ets.*.dll' -o -iname 'Knx*Resources*.dll' | grep -q .; then
+          if find addin/bin/Release/net48/ out/ -iname 'Knx.Ets.*.dll' -o -iname 'Knx*Resources*.dll' | grep -q .; then
             echo "::error::Proprietary KNX SDK DLL leaked into build output!"
-            find addin/bin/Release/net48/ -iname 'Knx.Ets.*.dll' -o -iname 'Knx*Resources*.dll'
+            find addin/bin/Release/net48/ out/ -iname 'Knx.Ets.*.dll' -o -iname 'Knx*Resources*.dll'
             exit 1
           fi
           echo "OK -- no proprietary DLLs in build output."
@@ -92,8 +100,7 @@ jobs:
         with:
           name: knx-ets-addin
           path: |
-            addin/**/bin/Release/net48/Knx.EtsBridge.Addin.dll
-            addin/AddInManifest.xml
+            out/
             addin/install.bat
             addin/install.ps1
             addin/uninstall.bat

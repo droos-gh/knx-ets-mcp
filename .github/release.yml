@@ -1,0 +1,31 @@
+# Configuration for GitHub's auto-generated release notes (release.yml workflow,
+# `generate_release_notes: true`). Release notes are user-facing: they list only
+# changes that matter to someone installing or using the AddIn + MCP server.
+#
+# Label internal pull requests (CI, tests, refactors, docs-only tweaks, live-test
+# spikes) with `internal` -- they are then left out of the notes.
+changelog:
+  exclude:
+    labels:
+      - internal
+      - ci
+      - tests
+      - refactor
+      - skip-release-notes
+    authors:
+      - dependabot
+      - github-actions
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking
+    - title: Security
+      labels:
+        - security
+    - title: Fixes
+      labels:
+        - bug
+        - fix
+    - title: Changes
+      labels:
+        - "*"

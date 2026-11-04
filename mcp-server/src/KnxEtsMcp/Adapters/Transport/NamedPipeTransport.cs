@@ -47,10 +47,24 @@ public sealed class NamedPipeTransport : ITransport
             await pipe.DisposeAsync().ConfigureAwait(false);
             throw new TransportException("Timed out connecting to the ETS AddIn pipe (is ETS running with the project open?)");
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or TimeoutException)
         {
             await pipe.DisposeAsync().ConfigureAwait(false);
             throw new TransportException($"Cannot connect to the ETS AddIn pipe: {ex.Message}", ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // The AddIn restricts the pipe to the Windows user running ETS.
+            await pipe.DisposeAsync().ConfigureAwait(false);
+            throw new TransportException(
+                "Access to the ETS AddIn pipe was denied: run the MCP server as the same Windows "
+              + $"user as ETS, with the same elevation (both as administrator or neither). {ex.Message}", ex);
+        }
+        catch (OperationCanceledException)
+        {
+            // Caller cancellation: do not leak the pipe handle.
+            await pipe.DisposeAsync().ConfigureAwait(false);
+            throw;
         }
 
         Token = token;

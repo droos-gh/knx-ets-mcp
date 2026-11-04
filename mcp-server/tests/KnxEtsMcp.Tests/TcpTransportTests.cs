@@ -331,7 +331,7 @@ public sealed class TcpTransportTests
         Assert.Contains("ga-0001", co1["links"].StringsB());
     }
 
-    // A request with a wrong token gets an invalid_token error.
+    // A request with a wrong token gets an auth_failed error (same code as the AddIn).
     [Fact]
     public async Task TestWrongTokenRejected()
     {
@@ -343,7 +343,7 @@ public sealed class TcpTransportTests
             var client = new KnxBridgeClient(t);
             var result = await client.RequestAsync("project.info");
             Assert.False(result.IsSuccess);
-            Assert.Contains("invalid_token", result.Error!.ToString());
+            Assert.Equal("auth_failed", result.Error!.Code);
         }
         finally
         {

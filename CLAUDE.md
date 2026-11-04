@@ -246,9 +246,12 @@ thread and an undo marker (see Hard constraints).
   `ProjectGuid`, GA address formatting, and bus/online/segment/tag features stubbed as
   `not_supported`); `ValueTuple` is deliberately kept for a live ETS5 runtime test.
 - **ETS5 config lives in the AddIn panel.** ETS5 has no `IEditAddInConfiguration` dialog,
-  so the ETS5 build (`HasConfigurationDialog=false`) exposes TCP on/off, port, LAN, and
-  token directly in `GetAddInUI()` with an "Apply & restart bridge" button. Applies to
-  the running bridge; ETS5 persistence across restart requires re-apply. ETS6 keeps its
+  so the ETS5 build (`HasConfigurationDialog=false`) exposes TCP on/off, port, LAN, Bus read-only and
+  token directly in `GetAddInUI()` with an "Apply & restart bridge" button. ETS5 does not
+  persist AddIn configuration, so Apply also saves it per user to
+  `%LOCALAPPDATA%\knx-ets-bridge\ets5-config.xml` (`UserConfiguration.SaveToFile`), restored
+  in `Initialize` -- the safety-critical Bus read-only survives ETS restarts and project
+  switches. ETS6 keeps its
   Configuration dialog. **Confirmed live:** the AddIn loads on ETS5 (ValueTuple bundle
   binds in-process, unsigned sideload works, host lifecycle runs).
 - **Signature:** installed ETS apps have a `<AppId>.signature` next to the folder,
@@ -512,4 +515,6 @@ manual-vs-LLM edits, Windows Named Pipe ACLs, and crash recovery.
   commit titles), keep such changes out of the notes: either phrase those commits so
   they are excluded, or add a `.github/release.yml` config that excludes internal
   labels/paths. Release notes list only changes that matter to someone installing/using
-  the AddIn + MCP server.
+  the AddIn + MCP server. `.github/release.yml` excludes PRs labelled `internal` (also
+  `ci`, `tests`, `refactor`, `skip-release-notes`): label every internal PR, and give
+  user-facing PRs a user-facing title.

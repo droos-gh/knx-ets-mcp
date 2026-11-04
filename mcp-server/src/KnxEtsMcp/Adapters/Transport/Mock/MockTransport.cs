@@ -128,9 +128,28 @@ public sealed partial class MockTransport : ITransport
         var idempotencyKey = request["idempotencyKey"];
         var expectedRev = request["expectedProjectRevision"];
 
-        // Token validation
+        // Token validation -- same codes/messages as the AddIn's IpcServer.
+        if (!request.ContainsKey("token"))
+            return Error(reqId, "invalid_params", "Missing 'token' field.");
         if (!Py.Eq(reqToken, MockToken))
-            return Error(reqId, "invalid_token", "Token mismatch");
+            return Error(reqId, "auth_failed", "Invalid session token.");
+
+        // Bus-write gate: before the idempotency handling (same order as the AddIn), so
+        // turning "Bus read-only" on also refuses a replay of an earlier bus write.
+        if (BusReadOnly && Py.HashKey(method) is { } busKey && ProtocolMethods.BusWrites.Contains(busKey))
+        {
+            return Error(reqId, "approval_required",
+                $"{busKey} writes to the KNX bus, but the AddIn is in 'Bus read-only' "
+                + "mode. Ask the user to disable 'Bus read-only' in the AddIn "
+                + "configuration if this operation is intended.");
+        }
+
+        // Mutating methods require an idempotency key (AddIn parity).
+        if (Py.HashKey(method) is { } mutatingKey && ProtocolMethods.Mutating.Contains(mutatingKey)
+            && !(idempotencyKey is JsonValue keyValue && keyValue.TryGetValue<string>(out var keyText) && keyText.Length > 0))
+        {
+            return Error(reqId, "invalid_params", "idempotencyKey is required for mutating methods.");
+        }
 
         // Idempotency: return cached result BEFORE revision check, so a lost-response
         // retry with the original expectedProjectRevision still replays the cached success.
@@ -140,16 +159,6 @@ public sealed partial class MockTransport : ITransport
             cacheKey = Py.AnyHashKey(idempotencyKey);
             if (_idempotencyCache.TryGetValue(cacheKey, out var cached))
                 return Ok(reqId, cached?.DeepClone());
-        }
-
-        // Bus-write gate (after idempotency replay, before the revision check -- same order
-        // as the AddIn's IpcServer).
-        if (BusReadOnly && Py.HashKey(method) is { } busKey && ProtocolMethods.BusWrites.Contains(busKey))
-        {
-            return Error(reqId, "approval_required",
-                $"{busKey} writes to the KNX bus, but the AddIn is in 'Bus read-only' "
-                + "mode. Ask the user to disable 'Bus read-only' in the AddIn "
-                + "configuration if this operation is intended.");
         }
 
         // Revision check (after idempotency replay)
