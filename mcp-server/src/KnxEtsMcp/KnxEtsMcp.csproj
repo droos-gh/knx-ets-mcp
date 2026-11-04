@@ -11,7 +11,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RootNamespace>KnxEtsMcp</RootNamespace>
     <AssemblyName>knx-ets-mcp</AssemblyName>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <ApplicationIcon>../../packaging/icon.ico</ApplicationIcon>
     <!-- Tool parameter names are part of the MCP schema and stay snake_case
