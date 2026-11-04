@@ -14,7 +14,7 @@ public sealed class RecoverTests
     {
         await using var host = await McpTestHost.StartAsync();
         var data = ToolAssert.Object(await host.CallAsync("knx_bridge_info"));
-        Assert.Equal("0.3.0", data["addinVersion"].StrB());
+        Assert.Equal("0.4.0", data["addinVersion"].StrB());
         Assert.Equal("6.3.7959.0", data["sdkVersion"].StrB());
         Assert.Equal("6.4.8658.0", data["builtAgainstSdk"].StrB());
         JsonTestExtensionsB.AssertKindB(data["projectName"], JsonValueKind.String);
