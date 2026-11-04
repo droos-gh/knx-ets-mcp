@@ -140,6 +140,42 @@ public sealed class UndoRedoTests
     }
 
     [Fact]
+    public async Task UndoOfALinkLeavesPreexistingLinksIntact()
+    {
+        var mock = new MockTransport();
+        await using var bridge = new KnxBridgeClient(mock);
+
+        // Seed: com-object co-0001 is already linked to ga-0001.
+        Assert.Contains("ga-0001", await ComLinksAsync(bridge, "dev-0001", "co-0001"));
+
+        // Add a new link co-0002 -> ga-0002.
+        var create = await bridge.RequestAsync("link.create",
+            new JsonObject { ["comObjectRef"] = "co-0002", ["gaRef"] = "ga-0002" });
+        Assert.True(create.IsSuccess, create.Error?.ToString());
+        Assert.Contains("ga-0002", await ComLinksAsync(bridge, "dev-0001", "co-0002"));
+
+        // Undo removes the new link but must leave the pre-existing seed link untouched.
+        var undo = await bridge.RequestAsync("project.undo");
+        Assert.True(undo.IsSuccess, undo.Error?.ToString());
+        Assert.DoesNotContain("ga-0002", await ComLinksAsync(bridge, "dev-0001", "co-0002"));
+        Assert.Contains("ga-0001", await ComLinksAsync(bridge, "dev-0001", "co-0001"));
+
+        // Redo restores the new link.
+        var redo = await bridge.RequestAsync("project.redo");
+        Assert.True(redo.IsSuccess, redo.Error?.ToString());
+        Assert.Contains("ga-0002", await ComLinksAsync(bridge, "dev-0001", "co-0002"));
+        Assert.Contains("ga-0001", await ComLinksAsync(bridge, "dev-0001", "co-0001"));
+    }
+
+    private static async Task<List<string>> ComLinksAsync(KnxBridgeClient bridge, string deviceRef, string comRef)
+    {
+        var result = await bridge.RequestAsync("comobjects.list", new JsonObject { ["deviceRef"] = deviceRef });
+        Assert.True(result.IsSuccess, result.Error?.ToString());
+        var co = result.Value.ArrB().Select(x => x.ObjB()).First(o => o["ref"].StrB() == comRef);
+        return co["links"].ArrB().Select(ga => ga.StrB()).ToList();
+    }
+
+    [Fact]
     public async Task UndoReturnsToExactlyTheSeedStateAndStopsAtTheStackBottom()
     {
         var mock = new MockTransport();
