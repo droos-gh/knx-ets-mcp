@@ -286,9 +286,13 @@ Mutating (idempotencyKey required, run on ETS UI thread under UndoManager marker
 - `project.backup` `{ path }` -> **always** `error.not_supported`
   - `Root.BackupDatabase` is a compat stub with no effect in ETS 6.
 - `project.undo` -> `{ ok }`
-  - Undoes the last operation (`UndoManager.Undo()`).
+  - Undoes the last operation (`UndoManager.Undo()`). Returns `error.invalid_params`
+    ("Nothing to undo") when the undo stack is empty, and does not advance the project
+    revision in that case; a successful undo is itself a change and advances the revision.
 - `project.redo` -> `{ ok }`
-  - Restores a previously undone operation (`UndoManager.Redo()`).
+  - Restores a previously undone operation (`UndoManager.Redo()`). Returns
+    `error.invalid_params` ("Nothing to redo") when the redo stack is empty, and does not
+    advance the project revision in that case.
 - `project.exportSemantic` -> **always** `error.not_supported`
   - `Root.ExportSemanticDataAsync` is asynchronous and would deadlock on the UI thread.
     Not supported in v1.

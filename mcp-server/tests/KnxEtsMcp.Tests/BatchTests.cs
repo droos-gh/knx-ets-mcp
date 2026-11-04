@@ -232,6 +232,93 @@ public sealed class BatchTests
         Assert.Equal("error", results[1]["status"].StrB());
     }
 
+    // -- operations as a JSON string (untyped-schema client behaviour) -------------
+    // Some MCP clients serialise the operations array as a JSON *string* for an untyped
+    // parameter. The tool must accept that form, not reject it as "not an array".
+
+    [Fact]
+    public async Task TestBatchAcceptsOperationsAsJsonString()
+    {
+        await using var host = await McpTestHost.StartAsync();
+        var opsJson = Ops(
+            Op("ga.create", ("name", "Str A"), ("address", "9/0/1")),
+            Op("ga.create", ("name", "Str B"), ("address", "9/0/2"))).ToJsonString();
+        var data = ToolAssert.Object(await host.CallAsync("knx_batch_apply", Args.Of(("operations", opsJson))));
+        data["applied"].IsTrueB();
+        Assert.Equal(2, data["ok"].IntB());
+    }
+
+    [Fact]
+    public async Task TestBatchStringEncodedRollback()
+    {
+        await using var host = await McpTestHost.StartAsync();
+        // Second op duplicates seed address 1/0/1 -> fails -> atomic rollback, even via the string form.
+        var opsJson = Ops(
+            Op("ga.create", ("name", "SR A"), ("address", "9/1/1")),
+            Op("ga.create", ("name", "Dup"), ("address", "1/0/1"))).ToJsonString();
+        var data = ToolAssert.Object(await host.CallAsync("knx_batch_apply", Args.Of(("operations", opsJson))));
+        data["applied"].IsFalseB();
+        data["rolledBack"].IsTrueB();
+    }
+
+    [Fact]
+    public async Task TestBatchRejectsNonArrayOperationsWithTypedError()
+    {
+        await using var host = await McpTestHost.StartAsync();
+        // A JSON object instead of an array: the error must be invalid_params and name the type.
+        var error = await ToolAssert.FailureAsync(() => host.CallAsync("knx_batch_apply",
+            Args.Of(("operations", new JsonObject { ["method"] = "ga.create" }))));
+        Assert.Contains("invalid_params", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("object", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TestBatchRejectsStringThatIsNotValidJson()
+    {
+        await using var host = await McpTestHost.StartAsync();
+        var error = await ToolAssert.FailureAsync(() => host.CallAsync("knx_batch_apply",
+            Args.Of(("operations", "not json at all"))));
+        Assert.Contains("invalid_params", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeOperationsUnit()
+    {
+        // A real array passes through.
+        var arr = KnxEtsMcp.Application.Tools.BatchTools.NormalizeOperations(
+            ArrayElement(Op("ga.create", ("name", "A"), ("address", "1/2/3"))));
+        Assert.Single(arr);
+
+        // A string-encoded array is unwrapped.
+        var fromString = KnxEtsMcp.Application.Tools.BatchTools.NormalizeOperations(
+            StringElement(Ops(Op("ga.create", ("name", "A"), ("address", "1/2/3"))).ToJsonString()));
+        Assert.Single(fromString);
+
+        // An empty array is rejected.
+        Assert.Throws<ModelContextProtocol.McpException>(
+            () => KnxEtsMcp.Application.Tools.BatchTools.NormalizeOperations(ArrayElement()));
+
+        // A JSON number is rejected with a message that names the type.
+        var ex = Assert.Throws<ModelContextProtocol.McpException>(
+            () => KnxEtsMcp.Application.Tools.BatchTools.NormalizeOperations(NumberElement(5)));
+        Assert.Contains("number", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static System.Text.Json.JsonElement ArrayElement(params JsonObject[] operations)
+        => ToElement(Ops(operations));
+
+    private static System.Text.Json.JsonElement StringElement(string value)
+        => ToElement(JsonValue.Create(value));
+
+    private static System.Text.Json.JsonElement NumberElement(int value)
+        => ToElement(JsonValue.Create(value));
+
+    private static System.Text.Json.JsonElement ToElement(JsonNode? node)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(node?.ToJsonString() ?? "null");
+        return doc.RootElement.Clone();
+    }
+
     // -- validate_only: read-only pre-flight ---------------------------------------
 
     [Fact]
